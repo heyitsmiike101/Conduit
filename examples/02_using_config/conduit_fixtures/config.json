@@ -1,0 +1,5 @@
+{
+  "API_KEY": "demo-key-replace-me",
+  "ENV": "dev",
+  "BASE_URL": "https://api.example.com"
+}

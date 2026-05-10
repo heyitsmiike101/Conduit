@@ -1,0 +1,199 @@
+"""
+Conduit platform — FastAPI application entrypoint.
+
+Startup sequence (via lifespan):
+  1. configure_logging()       — set log format and level from settings
+  2. init_db()                 — create all tables (idempotent)
+  3. encryption_service.init() — generate/load Fernet key
+  4. Sync check                — verify Script.file_path rows exist on disk;
+                                  emit WARNING + Notification for any that are missing
+  5. runner_service.restore_state() — recover from prior crash/shutdown
+  6. scheduler_service.start() — start APScheduler (loads persisted cron jobs)
+  7. metrics_service.start_collection_loop() — begin background metric sampling
+
+Shutdown sequence:
+  1. scheduler_service.shutdown()
+  2. runner_service.shutdown()   — terminates subprocesses, persists queue
+  3. metrics_service.stop_collection_loop()
+"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.config import settings
+from app.core.logging import configure_logging
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Lifespan
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Manages startup and shutdown of all platform services.
+    The code before `yield` runs at startup; after `yield` runs at shutdown.
+    """
+    # 1. Logging first so all subsequent messages are properly formatted
+    configure_logging()
+    logger.info("Conduit platform starting up...")
+
+    # 1b. Apply any persisted settings overrides from data/settings_override.json
+    from app.api.settings import apply_overrides_from_disk
+    apply_overrides_from_disk()
+
+    # 2. Database — create tables if they don't exist
+    from app.db import init_db
+    init_db()
+
+    # 3. Encryption — importing the singleton is sufficient; it auto-loads/creates
+    #    the Fernet key on first import. We import it here to surface any key
+    #    file errors at startup rather than mid-request.
+    from app.core.encryption import encryption_service  # noqa: F401 (side-effect import)
+    logger.info("Encryption service ready (key loaded from %s)", encryption_service._key_path)
+
+    # 4. Sync check — verify all Script file_path values still exist on disk
+    _sync_check_script_files()
+
+    # 5. Runner — recover from prior crash
+    from app.services.runner_service import runner_service
+    await runner_service.restore_state()
+
+    # 6. Scheduler — start APScheduler with persisted cron jobs
+    from app.services.scheduler_service import scheduler_service
+    scheduler_service.start()
+
+    # 7. Metrics — begin background sampling
+    from app.services.metrics_service import start_collection_loop
+    start_collection_loop()
+
+    logger.info("Conduit platform ready")
+    yield
+
+    # ---- Shutdown ----
+    logger.info("Conduit platform shutting down...")
+
+    from app.services.metrics_service import stop_collection_loop
+    stop_collection_loop()
+
+    from app.services.scheduler_service import scheduler_service
+    scheduler_service.shutdown()
+
+    from app.services.runner_service import runner_service
+    await runner_service.shutdown()
+
+    logger.info("Conduit platform stopped")
+
+
+def _sync_check_script_files() -> None:
+    """
+    Verify that every Script row's file_path still exists on disk.
+
+    Scripts whose files are missing get a WARNING log entry and a platform
+    Notification (category="missing_script_file"). This typically means a
+    file was manually deleted or a data directory was moved.
+    """
+    from app.db.session import SessionLocal
+    from app.db.models import Script, NotificationLevel
+    from app.services.notifications_service import create_notification
+
+    db = SessionLocal()
+    try:
+        scripts = db.query(Script).all()
+        missing = [s for s in scripts if not Path(s.file_path).exists()]
+        for script in missing:
+            logger.warning(
+                "Script '%s' (id=%s) file not found on disk: %s",
+                script.name, script.id, script.file_path,
+            )
+            create_notification(
+                level=NotificationLevel.WARN,
+                category="missing_script_file",
+                message=(
+                    f"Script '{script.name}' file is missing from disk: {script.file_path}. "
+                    "The script cannot be executed until the file is restored."
+                ),
+                db=db,
+                metadata={"script_id": script.id, "file_path": script.file_path},
+            )
+        if missing:
+            logger.warning(
+                "Sync check complete — %d script file(s) missing", len(missing)
+            )
+        else:
+            logger.info("Sync check complete — all script files present")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    app = FastAPI(
+        title="Conduit",
+        description="Multi-tenant Python automation platform",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+
+    # CORS — allow the frontend dev server and any configured origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Register all routers
+    _register_routers(app)
+
+    return app
+
+
+def _register_routers(app: FastAPI) -> None:
+    """Mount all API routers under /api/v1."""
+    from app.api.health import router as health_router
+    from app.api.accounts import router as accounts_router
+    from app.api.scripts import router as scripts_router
+    from app.api.variables import router as variables_router
+    from app.api.executions import router as executions_router
+    from app.api.cron_jobs import router as cron_jobs_router
+    from app.api.tables import router as tables_router
+    from app.api.notifications import router as notifications_router
+    from app.api.internal import router as internal_router
+    from app.api.metrics import router as metrics_router
+    from app.api.settings import router as settings_router
+
+    api_prefix = "/api/v1"
+
+    app.include_router(health_router, prefix=api_prefix)
+    app.include_router(accounts_router, prefix=api_prefix)
+    app.include_router(scripts_router, prefix=api_prefix)
+    app.include_router(variables_router, prefix=api_prefix)
+    app.include_router(executions_router, prefix=api_prefix)
+    app.include_router(cron_jobs_router, prefix=api_prefix)
+    app.include_router(tables_router, prefix=api_prefix)
+    app.include_router(notifications_router, prefix=api_prefix)
+    app.include_router(internal_router, prefix=api_prefix)
+    app.include_router(metrics_router, prefix=api_prefix)
+    app.include_router(settings_router, prefix=api_prefix)
+
+
+# Create the application instance
+app = create_app()
