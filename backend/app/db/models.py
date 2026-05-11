@@ -360,6 +360,7 @@ class ScriptVersion(Base):
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     code: Mapped[str] = mapped_column(Text, nullable=False)
     label: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     script: Mapped[Script] = relationship("Script", back_populates="versions")

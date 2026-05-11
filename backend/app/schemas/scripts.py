@@ -87,6 +87,7 @@ class ScriptVersionResponse(BaseModel):
     script_id: str
     version_number: int
     label: Optional[str]
+    file_path: Optional[str] = None
     created_at: datetime
     # code is intentionally omitted from list — only returned by revert/detail endpoints
 

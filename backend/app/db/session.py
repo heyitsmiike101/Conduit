@@ -110,6 +110,13 @@ def _run_migrations(conn) -> None:
         conn.execute(text("ALTER TABLE scripts ADD COLUMN selected_variable_ids TEXT"))
         logger.info("Migration: added scripts.selected_variable_ids column")
 
+    # ── script_versions.file_path ──────────────────────────────────────────
+    if inspector.has_table("script_versions"):
+        version_cols = {c["name"] for c in inspector.get_columns("script_versions")}
+        if "file_path" not in version_cols:
+            conn.execute(text("ALTER TABLE script_versions ADD COLUMN file_path VARCHAR(500)"))
+            logger.info("Migration: added script_versions.file_path column")
+
 
 def init_db() -> None:
     """

@@ -117,6 +117,56 @@ def delete_table_route(table_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.post("/{table_id}/rename-column", response_model=InfoTableResponse)
+def rename_column_route(
+    table_id: str,
+    body: dict,
+    db: Session = Depends(get_db),
+) -> InfoTable:
+    """
+    Rename a column: updates schema_json and rewrites all row data keys atomically.
+    Body: { "old_name": "...", "new_name": "..." }
+    """
+    old_name: str = body.get("old_name", "").strip()
+    new_name: str = body.get("new_name", "").strip()
+    if not old_name or not new_name:
+        raise HTTPException(status_code=422, detail="old_name and new_name are required")
+    if old_name == new_name:
+        raise HTTPException(status_code=422, detail="old_name and new_name are the same")
+
+    try:
+        tbl = get_table(table_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Update schema
+    try:
+        schema = json.loads(tbl.schema_json or '{"columns":[]}')
+    except json.JSONDecodeError:
+        schema = {"columns": []}
+    cols = schema.get("columns", [])
+    if old_name in cols:
+        cols[cols.index(old_name)] = new_name
+        schema["columns"] = cols
+        tbl.schema_json = json.dumps(schema)
+
+    # Rewrite all row data keys
+    from app.db.models import InfoTableRow
+    rows = db.query(InfoTableRow).filter_by(table_id=table_id).all()
+    for row in rows:
+        try:
+            data = json.loads(row.row_data_json)
+        except json.JSONDecodeError:
+            continue
+        if old_name in data:
+            data[new_name] = data.pop(old_name)
+            row.row_data_json = json.dumps(data)
+
+    db.commit()
+    db.refresh(tbl)
+    return tbl
+
+
 # ---------------------------------------------------------------------------
 # Row CRUD
 # ---------------------------------------------------------------------------

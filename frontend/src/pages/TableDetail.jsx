@@ -11,7 +11,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { format } from 'date-fns'
-import { getTable, listRows, insertRow, updateRow, deleteRow, patchTable } from '../api/tables'
+import { getTable, listRows, insertRow, updateRow, deleteRow, patchTable, renameColumn } from '../api/tables'
 import { useToast } from '../hooks/useToast'
 import ToastContainer from '../components/ToastContainer'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -186,9 +186,57 @@ function AddColumnForm({ existingColumns, onSave, onCancel }) {
   )
 }
 
+// ─── Editable column header ───────────────────────────────────────────────────
+
+function ColumnHeader({ col, onRename }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(col)
+  const inputRef = useRef(null)
+
+  useEffect(() => { setDraft(col) }, [col])
+
+  const commit = () => {
+    const trimmed = draft.trim()
+    if (trimmed && trimmed !== col) onRename(col, trimmed)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <th className="px-1 py-1">
+        <input
+          ref={inputRef}
+          autoFocus
+          className="input text-xs py-0.5 w-full min-w-[80px] font-mono uppercase tracking-wider"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') { setDraft(col); setEditing(false) }
+          }}
+        />
+      </th>
+    )
+  }
+
+  return (
+    <th
+      className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap cursor-pointer hover:text-gray-300 group"
+      title="Double-click to rename"
+      onDoubleClick={() => setEditing(true)}
+    >
+      <span className="flex items-center gap-1">
+        {col}
+        <span className="opacity-0 group-hover:opacity-100 text-gray-700 text-[9px] transition-opacity">✏</span>
+      </span>
+    </th>
+  )
+}
+
 // ─── Main table ───────────────────────────────────────────────────────────────
 
-function DataTable({ columns, rows, onCellUpdate, onInsert, onDelete, onAddColumn }) {
+function DataTable({ columns, rows, onCellUpdate, onInsert, onDelete, onAddColumn, onRenameColumn }) {
   const [showNew, setShowNew] = useState(false)
   const [showAddCol, setShowAddCol] = useState(false)
   // editingCell: { rowId, colIdx } | null
@@ -231,12 +279,7 @@ function DataTable({ columns, rows, onCellUpdate, onInsert, onDelete, onAddColum
           <thead>
             <tr className="border-b border-gray-800 bg-gray-900">
               {columns.map(col => (
-                <th
-                  key={col}
-                  className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                >
-                  {col}
-                </th>
+                <ColumnHeader key={col} col={col} onRename={onRenameColumn} />
               ))}
               <th className="px-3 py-2 w-28">
                 <div className="flex gap-1">
@@ -375,6 +418,16 @@ export default function TableDetail() {
     onError: e => toast.error(e.message),
   })
 
+  const renameColumnMutation = useMutation({
+    mutationFn: ({ oldName, newName }) => renameColumn(id, oldName, newName),
+    onSuccess: (_, { oldName, newName }) => {
+      qc.invalidateQueries({ queryKey: ['tables', id] })
+      qc.invalidateQueries({ queryKey: ['table-rows', id] })
+      toast.success(`Column renamed: "${oldName}" → "${newName}"`)
+    },
+    onError: e => toast.error(e.message),
+  })
+
   return (
     <div className="space-y-4">
       <ToastContainer toasts={toast.toasts} />
@@ -431,6 +484,7 @@ export default function TableDetail() {
           onInsert={(data) => insertMutation.mutate(data)}
           onDelete={setDeleteTarget}
           onAddColumn={(name) => addColumnMutation.mutate(name)}
+          onRenameColumn={(oldName, newName) => renameColumnMutation.mutate({ oldName, newName })}
         />
       )}
 

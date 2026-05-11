@@ -306,6 +306,7 @@ def save_script_content(
         version_number=_next_version_number(script_id, db),
         code=old_content,
         label=body.label,
+        file_path=path.name,
     )
     db.add(version)
 
@@ -368,7 +369,11 @@ def revert_script_to_version(
     if not target:
         raise HTTPException(status_code=404, detail=f"Version '{version_id}' not found")
 
-    path = Path(script.file_path)
+    # Determine which file to revert — use the version's file_path, fall back to main script
+    script_dir = Path(script.file_path).parent
+    rel_path = target.file_path if target.file_path else Path(script.file_path).name
+    path = _resolve_safe_path(script_dir, rel_path)
+
     old_content = path.read_text(encoding="utf-8") if path.exists() else ""
 
     # Snapshot current content before overwriting
@@ -377,13 +382,14 @@ def revert_script_to_version(
         version_number=_next_version_number(script_id, db),
         code=old_content,
         label=f"Before revert to v{target.version_number}",
+        file_path=rel_path,
     )
     db.add(snapshot)
 
     # Write the target version to disk
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(target.code, encoding="utf-8")
-    logger.info("Script %s reverted to version %d", script_id, target.version_number)
+    logger.info("Script %s reverted to version %d (%s)", script_id, target.version_number, rel_path)
 
     db.commit()
     db.refresh(snapshot)
@@ -557,13 +563,25 @@ def save_script_file(
     """
     Write content to a file in the script directory.
     Creates the file (and any parent subdirectories) if it doesn't exist.
-    Note: for script.py use PUT /content instead if you want version snapshots.
+    Creates a version snapshot for any text file so history is tracked.
     """
     script = _get_script_or_404(script_id, db)
     script_dir = Path(script.file_path).parent
     target = _resolve_safe_path(script_dir, file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Snapshot the previous content before overwriting (version history for all files)
+    old_content = target.read_text(encoding="utf-8") if target.exists() else ""
+    version = ScriptVersion(
+        script_id=script_id,
+        version_number=_next_version_number(script_id, db),
+        code=old_content,
+        file_path=file_path,
+    )
+    db.add(version)
+
     target.write_text(body.content, encoding="utf-8")
+    db.commit()
     logger.info("Script %s — wrote file %s (%d bytes)", script_id, file_path, len(body.content))
 
 

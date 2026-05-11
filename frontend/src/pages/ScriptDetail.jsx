@@ -1,10 +1,10 @@
 /**
- * ScriptDetail — Monaco editor with multi-file browser, version history,
- * execution log, and injected config.
+ * ScriptDetail — Monaco editor with multi-file browser, version history
+ * (all files), execution log, and injected config.
  *
  * Layout:
  *   [full-width editor card: file sidebar | Monaco]
- *   [version history (script.py only)]  [injected config]
+ *   [version history — all files, always open]  [injected config — always open]
  *   [full-width execution history + log panel]
  */
 
@@ -86,10 +86,9 @@ function ExecutionLogPanel({ execId }) {
   )
 }
 
-// ─── Version history panel ────────────────────────────────────────────────────
+// ─── Version history panel — always open, all files ──────────────────────────
 
-function VersionHistory({ scriptId, onRevert }) {
-  const [expanded, setExpanded] = useState(false)
+function VersionHistory({ scriptId, mainFileName, onRevert }) {
   const [previewId, setPreviewId] = useState(null)
   const qc = useQueryClient()
   const toast = useToast()
@@ -97,7 +96,7 @@ function VersionHistory({ scriptId, onRevert }) {
   const { data: versions = [] } = useQuery({
     queryKey: ['script-versions', scriptId],
     queryFn: () => listScriptVersions(scriptId),
-    enabled: expanded,
+    refetchInterval: 10_000,
   })
 
   const { data: preview } = useQuery({
@@ -111,6 +110,7 @@ function VersionHistory({ scriptId, onRevert }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['script-content', scriptId] })
       qc.invalidateQueries({ queryKey: ['script-versions', scriptId] })
+      qc.invalidateQueries({ queryKey: ['script-files', scriptId] })
       toast.success('Reverted to selected version')
       onRevert()
     },
@@ -119,66 +119,67 @@ function VersionHistory({ scriptId, onRevert }) {
 
   return (
     <div className="card">
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-gray-300 hover:bg-gray-800/40"
-      >
-        <span>Version History <span className="text-gray-600 font-normal text-xs">(script.py)</span></span>
-        <span className="text-gray-600">{expanded ? '▲' : '▼'}</span>
-      </button>
-      {expanded && (
-        <div className="border-t border-gray-800">
-          {versions.length === 0 ? (
-            <div className="p-4 text-xs text-gray-600 text-center">No versions yet — save script.py to create one</div>
-          ) : (
-            <div className="divide-y divide-gray-800 max-h-64 overflow-y-auto">
-              {versions.map(v => (
-                <div
-                  key={v.id}
-                  className={`px-4 py-2 flex items-center gap-3 cursor-pointer hover:bg-gray-800/40 ${previewId === v.id ? 'bg-gray-800/40' : ''}`}
-                  onClick={() => setPreviewId(previewId === v.id ? null : v.id)}
-                >
-                  <span className="text-xs font-mono text-gray-500 w-8 shrink-0">v{v.version_number}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-gray-400 truncate">{v.label || 'Auto-saved'}</div>
-                    <div className="text-xs text-gray-700">{format(new Date(v.created_at), 'MMM d, yyyy HH:mm')}</div>
+      <div className="px-4 py-3 border-b border-gray-800">
+        <div className="text-sm font-medium text-gray-200">Version History</div>
+        <div className="text-xs text-gray-600 mt-0.5">All files · {versions.length} snapshot{versions.length !== 1 ? 's' : ''}</div>
+      </div>
+      {versions.length === 0 ? (
+        <div className="p-4 text-xs text-gray-600 text-center">No versions yet — save any file to create a snapshot</div>
+      ) : (
+        <div className="divide-y divide-gray-800 max-h-64 overflow-y-auto">
+          {versions.map(v => {
+            const filePath = v.file_path ?? mainFileName
+            return (
+              <div
+                key={v.id}
+                className={`px-4 py-2 flex items-center gap-3 cursor-pointer hover:bg-gray-800/40 ${previewId === v.id ? 'bg-gray-800/40' : ''}`}
+                onClick={() => setPreviewId(previewId === v.id ? null : v.id)}
+              >
+                <span className="text-xs font-mono text-gray-600 w-8 shrink-0">v{v.version_number}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px]">{fileIcon(filePath)}</span>
+                    <code className="text-xs text-brand-400 font-mono truncate">{filePath}</code>
                   </div>
-                  <button
-                    className="btn-ghost text-xs shrink-0"
-                    onClick={e => { e.stopPropagation(); revertMutation.mutate(v.id) }}
-                    disabled={revertMutation.isPending}
-                  >
-                    Revert
-                  </button>
+                  <div className="text-xs text-gray-600">{format(new Date(v.created_at), 'MMM d, yyyy HH:mm')}</div>
+                  {v.label && <div className="text-xs text-gray-500 truncate">{v.label}</div>}
                 </div>
-              ))}
-            </div>
-          )}
-          {preview && (
-            <div className="border-t border-gray-800 p-3">
-              <div className="text-xs text-gray-500 mb-2">Preview — v{preview.version_number}</div>
-              <pre className="text-xs font-mono text-gray-400 bg-gray-950 p-3 rounded overflow-x-auto max-h-48 overflow-y-auto">
-                {preview.code}
-              </pre>
-            </div>
-          )}
+                <button
+                  className="btn-ghost text-xs shrink-0"
+                  onClick={e => { e.stopPropagation(); revertMutation.mutate(v.id) }}
+                  disabled={revertMutation.isPending}
+                  title={`Revert ${filePath} to this version`}
+                >
+                  Revert
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {preview && (
+        <div className="border-t border-gray-800 p-3">
+          <div className="text-xs text-gray-500 mb-2">
+            Preview — v{preview.version_number} · {preview.file_path ?? mainFileName}
+          </div>
+          <pre className="text-xs font-mono text-gray-400 bg-gray-950 p-3 rounded overflow-x-auto max-h-48 overflow-y-auto">
+            {preview.code}
+          </pre>
         </div>
       )}
     </div>
   )
 }
 
-// ─── Injected config panel ────────────────────────────────────────────────────
+// ─── Injected config panel — always open ─────────────────────────────────────
 
 function InjectedConfig({ scriptId }) {
-  const [expanded, setExpanded] = useState(false)
   const qc = useQueryClient()
   const toast = useToast()
 
   const { data: config, isLoading } = useQuery({
     queryKey: ['script-config', scriptId],
     queryFn: () => getScriptConfig(scriptId),
-    enabled: expanded,
   })
 
   const saveMutation = useMutation({
@@ -206,56 +207,45 @@ function InjectedConfig({ scriptId }) {
 
   return (
     <div className="card">
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-gray-300 hover:bg-gray-800/40"
-      >
-        <span>
+      <div className="px-4 py-3 border-b border-gray-800">
+        <div className="text-sm font-medium text-gray-200">
           Injected Config
           {totalCount > 0 && (
-            <span className="text-gray-500 font-normal ml-1.5">
+            <span className="text-gray-500 font-normal ml-1.5 text-xs">
               ({selectedCount}/{totalCount} var{totalCount !== 1 ? 's' : ''})
             </span>
           )}
-        </span>
-        <span className="text-gray-600">{expanded ? '▲' : '▼'}</span>
-      </button>
-      {expanded && (
-        <div className="border-t border-gray-800">
-          {isLoading ? (
-            <div className="p-4 text-xs text-gray-600">Loading…</div>
-          ) : totalCount === 0 ? (
-            <div className="p-4 text-xs text-gray-600 text-center">No variables available</div>
-          ) : (
-            <>
-              <div className="px-4 py-2 flex items-center gap-3 border-b border-gray-800">
-                <span className="text-xs text-gray-600 flex-1">Check which variables to inject at run time</span>
-                <button className="text-xs text-gray-500 hover:text-gray-300" onClick={() => saveMutation.mutate(null)}>All</button>
-                <button className="text-xs text-gray-500 hover:text-gray-300" onClick={() => saveMutation.mutate([])}>None</button>
-              </div>
-              {config.global_vars.length > 0 && (
-                <div className="p-3">
-                  <div className="text-xs text-gray-600 uppercase tracking-wide mb-2">Global</div>
-                  <div className="space-y-1.5">
-                    {config.global_vars.map(v => (
-                      <VarCheckRow key={v.id} variable={v} onToggle={handleToggle} />
-                    ))}
-                  </div>
-                </div>
-              )}
-              {config.account_vars.length > 0 && (
-                <div className="p-3 border-t border-gray-800">
-                  <div className="text-xs text-gray-600 uppercase tracking-wide mb-2">Account</div>
-                  <div className="space-y-1.5">
-                    {config.account_vars.map(v => (
-                      <VarCheckRow key={v.id} variable={v} onToggle={handleToggle} />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
         </div>
+        <div className="text-xs text-gray-600 mt-0.5">Variables decrypted and passed at run time</div>
+      </div>
+      {isLoading ? (
+        <div className="p-4 text-xs text-gray-600">Loading…</div>
+      ) : totalCount === 0 ? (
+        <div className="p-4 text-xs text-gray-600 text-center">No variables available — create some in Variables</div>
+      ) : (
+        <>
+          <div className="px-4 py-2 flex items-center gap-3 border-b border-gray-800">
+            <span className="text-xs text-gray-600 flex-1">Check to inject at run time</span>
+            <button className="text-xs text-gray-500 hover:text-gray-300" onClick={() => saveMutation.mutate(null)}>All</button>
+            <button className="text-xs text-gray-500 hover:text-gray-300" onClick={() => saveMutation.mutate([])}>None</button>
+          </div>
+          {config.global_vars.length > 0 && (
+            <div className="p-3">
+              <div className="text-xs text-gray-600 uppercase tracking-wide mb-2">Global</div>
+              <div className="space-y-1.5">
+                {config.global_vars.map(v => <VarCheckRow key={v.id} variable={v} onToggle={handleToggle} />)}
+              </div>
+            </div>
+          )}
+          {config.account_vars.length > 0 && (
+            <div className="p-3 border-t border-gray-800">
+              <div className="text-xs text-gray-600 uppercase tracking-wide mb-2">Account</div>
+              <div className="space-y-1.5">
+                {config.account_vars.map(v => <VarCheckRow key={v.id} variable={v} onToggle={handleToggle} />)}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -282,10 +272,7 @@ function VarCheckRow({ variable, onToggle }) {
 // ─── File sidebar ─────────────────────────────────────────────────────────────
 
 /**
- * Recursively reads a FileSystemEntry (file or directory) and yields
- * { path, file } objects for every text file found.
- *
- * Works in Chrome, Edge, Firefox, Safari 11.1+ via webkitGetAsEntry().
+ * Recursively reads a FileSystemEntry and yields { path, file } objects.
  */
 async function* readEntryTree(entry, basePath = '') {
   if (entry.isFile) {
@@ -295,7 +282,6 @@ async function* readEntryTree(entry, basePath = '') {
   } else if (entry.isDirectory) {
     const reader = entry.createReader()
     const dirBase = basePath ? `${basePath}/${entry.name}` : entry.name
-    // readEntries returns ≤100 entries per call — loop until empty
     let batch
     do {
       batch = await new Promise((res, rej) => reader.readEntries(res, rej))
@@ -306,8 +292,31 @@ async function* readEntryTree(entry, basePath = '') {
   }
 }
 
+/**
+ * Build a flat ordered list of { type: 'folder'|'file', path, depth } items
+ * so the sidebar can render folder headers before their children.
+ */
+function buildFileTree(files) {
+  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path))
+  const items = []
+  const renderedDirs = new Set()
+
+  sorted.forEach(f => {
+    const parts = f.path.split('/')
+    // Insert folder header(s) for every ancestor directory
+    for (let depth = 1; depth < parts.length; depth++) {
+      const dirPath = parts.slice(0, depth).join('/')
+      if (!renderedDirs.has(dirPath)) {
+        renderedDirs.add(dirPath)
+        items.push({ type: 'folder', path: dirPath, depth: depth - 1 })
+      }
+    }
+    items.push({ type: 'file', path: f.path, depth: parts.length - 1 })
+  })
+  return items
+}
+
 function FileSidebar({ files, activeFilePath, mainFileName, dirtyFiles, onSelect, onCreate, onDelete, isDragOver, uploading }) {
-  // 'none' | 'file' | 'folder'
   const [newMode, setNewMode] = useState('none')
   const [newName, setNewName] = useState('')
 
@@ -317,75 +326,78 @@ function FileSidebar({ files, activeFilePath, mainFileName, dirtyFiles, onSelect
     e.preventDefault()
     const name = newName.trim()
     if (!name) return
-    const filename = newMode === 'folder' ? `${name}/__init__.py` : name
+    // For folders, create a placeholder file inside so the dir exists
+    const filename = newMode === 'folder' ? `${name}/placeholder.txt` : name
     onCreate(filename, closeForm)
   }
+
+  const treeItems = buildFileTree(files)
 
   return (
     <div
       className={`flex flex-col border-r transition-colors ${isDragOver ? 'border-brand-500 bg-brand-900/20' : 'border-gray-800 bg-gray-900/60'}`}
       style={{ width: '188px', minWidth: '188px' }}
     >
-      {/* Header */}
       <div className="px-3 py-2 text-xs text-gray-600 uppercase tracking-wide border-b border-gray-800 font-medium flex items-center justify-between">
         <span>Files</span>
-        {uploading && <span className="text-brand-400 animate-pulse">uploading…</span>}
+        {uploading && <span className="text-brand-400 animate-pulse text-[10px]">uploading…</span>}
       </div>
 
-      {/* File list */}
       <div className="flex-1 overflow-y-auto py-1 relative">
-        {files.map(f => {
-          const isActive = activeFilePath === f.path
-          const isDirty = dirtyFiles.has(f.path)
-          const isProtected = f.path === mainFileName
-          // Show folder hierarchy: indent files in subdirectories
-          const depth = f.path.split('/').length - 1
-          const displayName = f.path.split('/').pop()
-          const prefix = f.path.includes('/') ? f.path.split('/').slice(0, -1).join('/') + '/' : ''
+        {treeItems.map(item => {
+          if (item.type === 'folder') {
+            return (
+              <div
+                key={`folder:${item.path}`}
+                className="flex items-center gap-1 py-1 text-xs text-gray-600 select-none"
+                style={{ paddingLeft: `${8 + item.depth * 12}px`, paddingRight: '6px' }}
+              >
+                <span className="shrink-0 text-[10px]">📁</span>
+                <span className="font-mono text-[11px] truncate">{item.path.split('/').pop()}</span>
+              </div>
+            )
+          }
+
+          const isActive = activeFilePath === item.path
+          const isDirty = dirtyFiles.has(item.path)
+          const isProtected = item.path === mainFileName
+          const displayName = item.path.split('/').pop()
 
           return (
             <div
-              key={f.path}
+              key={item.path}
               className={`group flex items-center gap-1 py-1.5 cursor-pointer text-xs transition-colors ${
                 isActive ? 'bg-gray-700/70 text-gray-100' : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
               }`}
-              style={{ paddingLeft: `${8 + depth * 12}px`, paddingRight: '6px' }}
-              onClick={() => onSelect(f.path)}
-              title={f.path}
+              style={{ paddingLeft: `${8 + item.depth * 12}px`, paddingRight: '6px' }}
+              onClick={() => onSelect(item.path)}
+              title={item.path}
             >
-              <span className="shrink-0 text-[10px] leading-none">{fileIcon(f.path)}</span>
-              <span className="flex-1 truncate font-mono leading-tight text-[11px]">
-                {prefix && <span className="text-gray-700">{/* indent handled by padding */}</span>}
-                {displayName}
-              </span>
+              <span className="shrink-0 text-[10px] leading-none">{fileIcon(item.path)}</span>
+              <span className="flex-1 truncate font-mono leading-tight text-[11px]">{displayName}</span>
               {isDirty && <span className="text-yellow-400 shrink-0 text-[9px]" title="Unsaved changes">●</span>}
               {!isProtected && (
                 <button
                   className="shrink-0 text-gray-600 hover:text-red-400 transition-colors leading-none px-0.5 rounded"
-                  title={`Delete ${f.path}`}
-                  onClick={e => { e.stopPropagation(); onDelete(f.path) }}
-                >
-                  ×
-                </button>
+                  title={`Delete ${item.path}`}
+                  onClick={e => { e.stopPropagation(); onDelete(item.path) }}
+                >×</button>
               )}
             </div>
           )
         })}
 
         {files.length === 0 && (
-          <div className="px-3 py-4 text-xs text-gray-700 text-center">
-            Drop files here or click + below
-          </div>
+          <div className="px-3 py-4 text-xs text-gray-700 text-center">Drop files here or use + below</div>
         )}
       </div>
 
-      {/* Footer: create actions */}
       <div className="border-t border-gray-800 p-2 shrink-0">
         {newMode !== 'none' ? (
           <form onSubmit={handleCreate} className="flex flex-col gap-1.5">
             <div className="text-[10px] text-gray-600 px-1">
               {newMode === 'folder'
-                ? 'Folder name (creates __init__.py inside)'
+                ? 'Folder name (creates placeholder inside)'
                 : 'Filename — use folder/file.py for subfolders'}
             </div>
             <input
@@ -407,21 +419,15 @@ function FileSidebar({ files, activeFilePath, mainFileName, dirtyFiles, onSelect
               className="flex-1 text-xs text-gray-600 hover:text-gray-300 py-1 transition-colors text-center rounded hover:bg-gray-800/50"
               onClick={() => setNewMode('file')}
               title="New file"
-            >
-              📄 File
-            </button>
+            >📄 File</button>
             <button
               className="flex-1 text-xs text-gray-600 hover:text-gray-300 py-1 transition-colors text-center rounded hover:bg-gray-800/50"
               onClick={() => setNewMode('folder')}
-              title="New folder (creates __init__.py)"
-            >
-              📁 Folder
-            </button>
+              title="New folder"
+            >📁 Folder</button>
           </div>
         )}
-        <div className="text-[10px] text-gray-700 text-center mt-1">
-          or drag & drop files/folders
-        </div>
+        <div className="text-[10px] text-gray-700 text-center mt-1">or drag & drop files/folders</div>
       </div>
     </div>
   )
@@ -434,25 +440,20 @@ export default function ScriptDetail() {
   const toast = useToast()
   const qc = useQueryClient()
 
-  // Execution state
   const [selectedExecId, setSelectedExecId] = useState(null)
-
-  // File editor state — starts with placeholder; updated once script loads
   const [activeFilePath, setActiveFilePath] = useState('script.py')
   const [mainFileName, setMainFileName] = useState('script.py')
   const [dirtyFiles, setDirtyFiles] = useState(new Set())
   const [saveLabel, setSaveLabel] = useState('')
 
-  // Refs — stable across renders, no stale closure issues
   const editorRef = useRef(null)
-  const fileCache = useRef({})       // path → latest editor content (includes unsaved)
-  const loadedPathRef = useRef(null) // which path is currently shown in the editor
+  const fileCache = useRef({})
+  const loadedPathRef = useRef(null)
   const mainContentRef = useRef(null)
   const activeFileDataRef = useRef(null)
   const activeFilePathRef = useRef(activeFilePath)
   const mainFileNameRef = useRef(mainFileName)
 
-  // Drag-and-drop state (card-level drop zone)
   const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const dragCounter = useRef(0)
@@ -471,14 +472,12 @@ export default function ScriptDetail() {
     refetchInterval: 15_000,
   })
 
-  // script.py uses the versioned /content endpoint
   const { data: mainContentData } = useQuery({
     queryKey: ['script-content', id],
     queryFn: () => getScriptContent(id),
     enabled: !!script,
   })
 
-  // Other files use the generic /files/{path} endpoint
   const { data: activeFileData } = useQuery({
     queryKey: ['script-file-content', id, activeFilePath],
     queryFn: () => getScriptFile(id, activeFilePath),
@@ -507,37 +506,28 @@ export default function ScriptDetail() {
   useEffect(() => { activeFilePathRef.current = activeFilePath }, [activeFilePath])
   useEffect(() => { mainFileNameRef.current = mainFileName }, [mainFileName])
 
-  // Derive the main file name from the script's file_path once loaded
   useEffect(() => {
     if (!script) return
-    const name = script.file_path.split('/').pop() // basename of the file_path
+    const name = script.file_path.split('/').pop()
     setMainFileName(name)
     mainFileNameRef.current = name
     setActiveFilePath(name)
     activeFilePathRef.current = name
-  }, [script?.id]) // run once per script, keyed by ID
+  }, [script?.id])
 
-  // ── Keep data refs current ──
   useEffect(() => { mainContentRef.current = mainContentData }, [mainContentData])
   useEffect(() => { activeFileDataRef.current = activeFileData }, [activeFileData])
 
-  // ── Core: load content into the editor ──
-  // Uses refs so it never has stale closures, safe to call any time.
   const loadEditorContent = useCallback(() => {
     const editor = editorRef.current
     if (!editor) return
-
     const path = activeFilePathRef.current
     if (loadedPathRef.current === path && fileCache.current[path] !== undefined) return
-
-    // 1. Use cached (possibly dirty) content if available
     if (fileCache.current[path] !== undefined) {
       editor.setValue(fileCache.current[path])
       loadedPathRef.current = path
       return
     }
-
-    // 2. Load from fetched data
     let content
     if (path === mainFileNameRef.current) {
       content = mainContentRef.current?.content
@@ -545,15 +535,13 @@ export default function ScriptDetail() {
       const data = activeFileDataRef.current
       if (data?.path === path) content = data.content
     }
-
     if (content !== undefined) {
       fileCache.current[path] = content
       editor.setValue(content)
       loadedPathRef.current = path
     }
-  }, []) // no deps — reads everything from refs
+  }, [])
 
-  // Run whenever data arrives or file switches
   useEffect(() => { loadEditorContent() }, [mainContentData, activeFileData, activeFilePath, loadEditorContent])
 
   // ── Mutations ──
@@ -577,7 +565,6 @@ export default function ScriptDetail() {
     onError: (e) => toast.error(e.message),
   })
 
-  // Save the main file via /content (creates a version snapshot)
   const saveMainMutation = useMutation({
     mutationFn: ({ content, label }) => saveScriptContent(id, { content, label: label || undefined }),
     onSuccess: () => {
@@ -590,13 +577,13 @@ export default function ScriptDetail() {
     onError: e => toast.error(e.message),
   })
 
-  // Save other files via /files/{path}
   const saveFileMutation = useMutation({
     mutationFn: ({ path, content }) => saveScriptFile(id, path, { content }),
     onSuccess: (_, { path }) => {
       toast.success(`${path} saved`)
       setDirtyFiles(prev => { const s = new Set(prev); s.delete(path); return s })
       qc.invalidateQueries({ queryKey: ['script-files', id] })
+      qc.invalidateQueries({ queryKey: ['script-versions', id] })
     },
     onError: e => toast.error(e.message),
   })
@@ -608,7 +595,6 @@ export default function ScriptDetail() {
       fileCache.current[data.path] = data.content ?? ''
       refetchFiles()
       if (!silent) {
-        // Switch to the new file
         loadedPathRef.current = null
         setActiveFilePath(data.path)
       }
@@ -617,18 +603,11 @@ export default function ScriptDetail() {
     onError: e => toast.error(e.message),
   })
 
-  // Upload multiple files at once (from drag-and-drop)
-  // Accepts { path, file } where file is a raw browser File object (binary-safe)
   const handleUpload = useCallback(async (filesToUpload) => {
-    let succeeded = 0
-    let skipped = 0
+    let succeeded = 0, skipped = 0
     for (const { path, file } of filesToUpload) {
-      try {
-        await uploadScriptFile(id, path, file)
-        succeeded++
-      } catch {
-        skipped++
-      }
+      try { await uploadScriptFile(id, path, file); succeeded++ }
+      catch { skipped++ }
     }
     refetchFiles()
     if (succeeded > 0) {
@@ -638,51 +617,31 @@ export default function ScriptDetail() {
     }
   }, [id, refetchFiles, toast])
 
-  // ── Card-level drag-and-drop (covers sidebar + Monaco) ──
   const handleCardDragEnter = useCallback((e) => {
-    e.preventDefault()
-    dragCounter.current += 1
-    setIsDragOver(true)
+    e.preventDefault(); dragCounter.current += 1; setIsDragOver(true)
   }, [])
-
   const handleCardDragLeave = useCallback((e) => {
-    e.preventDefault()
-    dragCounter.current -= 1
+    e.preventDefault(); dragCounter.current -= 1
     if (dragCounter.current === 0) setIsDragOver(false)
   }, [])
-
   const handleCardDragOver = useCallback((e) => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'copy'
+    e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
   }, [])
-
   const handleCardDrop = useCallback(async (e) => {
-    e.preventDefault()
-    dragCounter.current = 0
-    setIsDragOver(false)
-
+    e.preventDefault(); dragCounter.current = 0; setIsDragOver(false)
     const items = [...(e.dataTransfer.items || [])]
-    if (items.length === 0) return
-
+    if (!items.length) return
     setIsUploading(true)
     const toUpload = []
-
     try {
       for (const item of items) {
         const entry = item.webkitGetAsEntry?.()
         if (!entry) continue
-        for await (const { path, file } of readEntryTree(entry)) {
-          toUpload.push({ path, file })
-        }
+        for await (const { path, file } of readEntryTree(entry)) toUpload.push({ path, file })
       }
-      if (toUpload.length > 0) {
-        await handleUpload(toUpload)
-      } else {
-        toast.error('No files found in the drop')
-      }
-    } finally {
-      setIsUploading(false)
-    }
+      if (toUpload.length > 0) await handleUpload(toUpload)
+      else toast.error('No files found in the drop')
+    } finally { setIsUploading(false) }
   }, [handleUpload, toast])
 
   const deleteFileMutation = useMutation({
@@ -700,11 +659,9 @@ export default function ScriptDetail() {
     onError: e => toast.error(e.message),
   })
 
-  // ── Editor event handlers ──
-
   const handleEditorMount = useCallback((editor) => {
     editorRef.current = editor
-    loadedPathRef.current = null // reset so loadEditorContent will run
+    loadedPathRef.current = null
     loadEditorContent()
   }, [loadEditorContent])
 
@@ -721,10 +678,7 @@ export default function ScriptDetail() {
 
   const handleFileSelect = useCallback((path) => {
     if (path === activeFilePathRef.current) return
-    // Snapshot current editor value before switching
-    if (editorRef.current) {
-      fileCache.current[activeFilePathRef.current] = editorRef.current.getValue()
-    }
+    if (editorRef.current) fileCache.current[activeFilePathRef.current] = editorRef.current.getValue()
     loadedPathRef.current = null
     setSaveLabel('')
     setActiveFilePath(path)
@@ -751,7 +705,6 @@ export default function ScriptDetail() {
     deleteFileMutation.mutate(path)
   }, [deleteFileMutation])
 
-  // Cmd/Ctrl+S shortcut
   useEffect(() => {
     const onKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
@@ -765,9 +718,7 @@ export default function ScriptDetail() {
 
   // ── Render ──
 
-  if (isLoading || !script) {
-    return <div className="text-sm text-gray-500 p-4">Loading…</div>
-  }
+  if (isLoading || !script) return <div className="text-sm text-gray-500 p-4">Loading…</div>
 
   const isTool = script.script_type === 'tool'
   const hasRunning = executions.some(e => e.status === 'running')
@@ -794,23 +745,16 @@ export default function ScriptDetail() {
         {!isTool && (
           <div className="flex gap-2">
             {hasRunning ? (
-              <button
-                className="btn-danger"
-                onClick={() => {
-                  const running = executions.find(e => e.status === 'running')
-                  if (running) cancelMutation.mutate(running.id)
-                }}
-              >
-                ■ Cancel
-              </button>
+              <button className="btn-danger" onClick={() => {
+                const running = executions.find(e => e.status === 'running')
+                if (running) cancelMutation.mutate(running.id)
+              }}>■ Cancel</button>
             ) : (
               <button
                 className="btn-primary"
                 onClick={() => runMutation.mutate()}
                 disabled={!script.enabled || runMutation.isPending}
-              >
-                ▶ Run Now
-              </button>
+              >▶ Run Now</button>
             )}
           </div>
         )}
@@ -859,7 +803,7 @@ export default function ScriptDetail() {
         </div>
       </div>
 
-      {/* ── Full-width editor card — entire card is the drop zone ── */}
+      {/* Editor card */}
       <div
         className={`card overflow-hidden relative transition-colors ${isDragOver ? 'ring-2 ring-brand-500' : ''}`}
         onDragEnter={handleCardDragEnter}
@@ -867,7 +811,6 @@ export default function ScriptDetail() {
         onDragOver={handleCardDragOver}
         onDrop={handleCardDrop}
       >
-        {/* Full-card drop overlay */}
         {isDragOver && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-brand-900/60 pointer-events-none">
             <div className="bg-gray-900 border-2 border-brand-500 rounded-xl px-8 py-6 text-center shadow-2xl">
@@ -879,15 +822,10 @@ export default function ScriptDetail() {
         )}
         {/* Toolbar */}
         <div className="px-4 py-2 border-b border-gray-800 flex items-center gap-2 bg-gray-900/60">
-          {/* Filename + unsaved indicator */}
           <span className="text-xs font-mono text-gray-400 flex-1 truncate">
             {activeFilePath}
-            {isActiveFileDirty && (
-              <span className="text-yellow-400 ml-1.5" title="Unsaved changes">●</span>
-            )}
+            {isActiveFileDirty && <span className="text-yellow-400 ml-1.5" title="Unsaved changes">●</span>}
           </span>
-
-          {/* Version label — only for the main file when dirty */}
           {isActiveFileDirty && activeFilePath === mainFileName && (
             <input
               className="input text-xs py-1 w-36"
@@ -896,10 +834,7 @@ export default function ScriptDetail() {
               onChange={e => setSaveLabel(e.target.value)}
             />
           )}
-
           <span className="text-xs text-gray-700 hidden sm:block">Ctrl+S</span>
-
-          {/* Save */}
           <button
             className="btn-primary text-xs shrink-0"
             onClick={handleSave}
@@ -907,20 +842,15 @@ export default function ScriptDetail() {
           >
             {isSaving ? 'Saving…' : isActiveFileDirty ? '● Save' : 'Saved'}
           </button>
-
-          {/* Delete — shown for all files except the main file */}
           {activeFilePath !== mainFileName && (
             <button
               className="btn-ghost text-xs text-red-400 hover:text-red-300 hover:bg-red-900/30 shrink-0"
               onClick={() => handleDelete(activeFilePath)}
               title={`Delete ${activeFilePath}`}
-            >
-              Delete file
-            </button>
+            >Delete file</button>
           )}
         </div>
 
-        {/* Sidebar + Monaco */}
         <div className="flex" style={{ height: '520px' }}>
           <FileSidebar
             files={files}
@@ -954,26 +884,22 @@ export default function ScriptDetail() {
         </div>
       </div>
 
-      {/* ── Secondary panels: version history + injected config ── */}
+      {/* Version history + injected config — always open, side by side */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {activeFilePath === mainFileName ? (
-          <VersionHistory
-            scriptId={id}
-            onRevert={() => {
-              delete fileCache.current[mainFileName]
-              loadedPathRef.current = null
-              setDirtyFiles(prev => { const s = new Set(prev); s.delete(mainFileName); return s })
-            }}
-          />
-        ) : (
-          <div className="card p-4 text-xs text-gray-600 flex items-center justify-center">
-            Version history is available for {mainFileName} only
-          </div>
-        )}
+        <VersionHistory
+          scriptId={id}
+          mainFileName={mainFileName}
+          onRevert={() => {
+            // Clear cache for all files and reload
+            fileCache.current = {}
+            loadedPathRef.current = null
+            setDirtyFiles(new Set())
+          }}
+        />
         {!isTool && <InjectedConfig scriptId={id} />}
       </div>
 
-      {/* ── Execution history (scripts only) ── */}
+      {/* Execution history (scripts only) */}
       {!isTool && (
         <>
           <div className="card">
@@ -1003,7 +929,6 @@ export default function ScriptDetail() {
               ))}
             </div>
           </div>
-
           <ExecutionLogPanel execId={selectedExecId} />
         </>
       )}

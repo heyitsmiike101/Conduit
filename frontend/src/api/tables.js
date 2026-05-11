@@ -9,6 +9,8 @@ export const createTable  = (body)        => api.post('/tables', body)
 export const patchTable   = (id, body)    => api.patch(`/tables/${id}`, body)
 export const deleteTable  = (id)          => api.delete(`/tables/${id}`)
 
+export const renameColumn = (id, old_name, new_name) => api.post(`/tables/${id}/rename-column`, { old_name, new_name })
+
 export const listRows     = (tableId)               => api.get(`/tables/${tableId}/rows`)
 export const insertRow    = (tableId, row_data)      => api.post(`/tables/${tableId}/rows`, { row_data })
 export const updateRow    = (tableId, rowId, row_data) => api.patch(`/tables/${tableId}/rows/${rowId}`, { row_data })

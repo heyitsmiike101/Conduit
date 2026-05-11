@@ -26,6 +26,40 @@ function Section({ title, description, children }) {
   )
 }
 
+// ─── Select (dropdown) setting row ───────────────────────────────────────────
+
+function SelectRow({ label, envVar, value, hint, options, onSave }) {
+  const [saving, setSaving] = useState(false)
+
+  const handleChange = useCallback(async (raw) => {
+    setSaving(true)
+    await onSave(raw)
+    setSaving(false)
+  }, [onSave])
+
+  return (
+    <div className="flex items-start justify-between gap-4 py-2 border-b border-gray-800 last:border-0">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-gray-200">{label}</div>
+        <code className="text-xs text-gray-600 font-mono">{envVar}</code>
+        {hint && <p className="text-xs text-gray-600 mt-0.5">{hint}</p>}
+      </div>
+      <div className="shrink-0 flex items-center gap-2">
+        <select
+          className="input text-sm py-1 w-36 font-mono"
+          value={value ?? ''}
+          onChange={e => handleChange(e.target.value)}
+        >
+          {options.map(opt => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+        {saving && <span className="text-xs text-gray-600">Saving…</span>}
+      </div>
+    </div>
+  )
+}
+
 // ─── Editable setting row (debounced auto-save) ───────────────────────────────
 
 function EditableRow({ label, envVar, value, hint, type = 'number', onSave, min, max, step }) {
@@ -223,13 +257,13 @@ export default function Settings() {
 
       {/* Logging */}
       <Section title="Logging">
-        <EditableRow
+        <SelectRow
           label="Log Level"
           envVar="LOG_LEVEL"
           value={s?.log_level}
-          hint="DEBUG enables SQLAlchemy query logging."
-          type="text"
-          onSave={v => patchMutation.mutateAsync({ log_level: v.toUpperCase() })}
+          hint="DEBUG enables verbose SQLAlchemy query logging."
+          options={['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']}
+          onSave={v => patchMutation.mutateAsync({ log_level: v })}
         />
       </Section>
 
