@@ -31,7 +31,7 @@ A self-hosted Python automation platform. Write scripts, run them on a schedule 
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/conduit.git
+git clone https://github.com/heyitsmiike101/Conduit.git
 cd conduit
 ```
 
