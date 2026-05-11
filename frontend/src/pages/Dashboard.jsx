@@ -300,6 +300,22 @@ export default function Dashboard() {
     staleTime: 0,
   })
 
+  // Calculate today's start time in UTC (midnight)
+  const todayStart = useMemo(() => {
+    const now = new Date()
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+    return startOfDay.toISOString()
+  }, [])
+
+  // Fetch all executions from today (no limit)
+  const { data: todaysAllExecs = [] } = useQuery({
+    queryKey: ['executions', 'today'],
+    queryFn: () => listExecutions({ started_after: todayStart, limit: 0 }),
+    refetchInterval: POLL,
+    refetchIntervalInBackground: true,
+    staleTime: 0,
+  })
+
   const { data: metrics = {} } = useQuery({
     queryKey: ['metrics', 24],
     queryFn: () => getMetrics(24),
@@ -336,9 +352,23 @@ export default function Dashboard() {
   const succeeded  = completed.filter(e => e.status === 'success')
   const failed     = completed.filter(e => ['failed', 'error', 'timeout'].includes(e.status))
   const successPct = completed.length ? Math.round((succeeded.length / completed.length) * 100) : null
+
   // Append 'Z' so the bare UTC string is parsed as UTC, not local time
   const utc = (ts) => new Date(ts + 'Z')
-  const todayExecs = useMemo(() => recentExecs.filter(e => isToday(utc(e.started_at))), [recentExecs])
+
+  // Use the full-date-filtered execution set for today's stats
+  const todayExecs = useMemo(() => todaysAllExecs, [todaysAllExecs])
+
+  // Calculate success rate for today's executions only
+  const todayCompleted = useMemo(
+    () => todayExecs.filter(e => ['success', 'failed', 'error', 'timeout'].includes(e.status)),
+    [todayExecs]
+  )
+  const todaySucceeded = useMemo(() => todayCompleted.filter(e => e.status === 'success'), [todayCompleted])
+  const todaySuccessPct = useMemo(
+    () => todayCompleted.length ? Math.round((todaySucceeded.length / todayCompleted.length) * 100) : null,
+    [todayCompleted, todaySucceeded]
+  )
 
   const timed = completed.filter(e => e.duration_seconds != null)
   const avgDuration  = timed.length ? timed.reduce((s, e) => s + e.duration_seconds, 0) / timed.length : null
@@ -449,12 +479,12 @@ export default function Dashboard() {
           sub={
             todayExecs.length === 0
               ? 'No runs yet today'
-              : successPct != null
-                ? `${successPct}% success rate today`
+              : todaySuccessPct != null
+                ? `${todaySuccessPct}% success rate today`
                 : 'Runs in progress'
           }
-          warn={successPct != null && successPct < 80}
-          crit={successPct != null && successPct < 50}
+          warn={todaySuccessPct != null && todaySuccessPct < 80}
+          crit={todaySuccessPct != null && todaySuccessPct < 50}
         />
         <StatCard
           icon="💾"

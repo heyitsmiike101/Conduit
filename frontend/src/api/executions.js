@@ -4,7 +4,8 @@ export const listExecutions   = (params = {}) => {
   const parts = []
   if (params.script_id) parts.push(`script_id=${params.script_id}`)
   if (params.status)    parts.push(`status=${params.status}`)
-  if (params.limit)     parts.push(`limit=${params.limit}`)
+  if (params.limit !== undefined) parts.push(`limit=${params.limit}`)
+  if (params.started_after) parts.push(`started_after=${encodeURIComponent(params.started_after)}`)
   const qs = parts.length ? `?${parts.join('&')}` : ''
   return api.get(`/executions${qs}`)
 }

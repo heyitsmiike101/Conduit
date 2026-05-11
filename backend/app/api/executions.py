@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -60,6 +61,7 @@ def list_executions(
     script_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50,
+    started_after: Optional[str] = None,
     db: Session = Depends(get_db),
 ) -> List[Execution]:
     """
@@ -67,14 +69,24 @@ def list_executions(
 
     Optional ?script_id= to filter to one script.
     Optional ?status=  to filter by status (queued|running|success|failed|timeout|interrupted).
-    Optional ?limit=   to cap results (default 50).
+    Optional ?started_after=ISO8601 to filter executions started after this timestamp (e.g., 2026-05-11T00:00:00Z).
+    Optional ?limit=   to cap results (default 50, 0 = no limit).
     """
     query = db.query(Execution)
     if script_id is not None:
         query = query.filter(Execution.script_id == script_id)
     if status is not None:
         query = query.filter(Execution.status == status)
-    return query.order_by(Execution.started_at.desc()).limit(limit).all()
+    if started_after is not None:
+        try:
+            cutoff = datetime.fromisoformat(started_after.replace('Z', '+00:00'))
+            query = query.filter(Execution.started_at >= cutoff)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="Invalid started_after format (use ISO8601 with Z)")
+    query = query.order_by(Execution.started_at.desc())
+    if limit > 0:
+        query = query.limit(limit)
+    return query.all()
 
 
 @router.get("/{execution_id}", response_model=ExecutionResponse)
