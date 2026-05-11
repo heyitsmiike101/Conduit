@@ -400,3 +400,41 @@ class Session(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     user: Mapped[User] = relationship("User", back_populates="sessions")
+
+
+class AuditLog(Base):
+    """
+    Immutable audit trail for sensitive platform operations.
+
+    Records who did what, when, and to which resource. User is nullable
+    so unauthenticated actions (e.g. before auth is enabled) are still tracked.
+    Never delete rows — append-only table.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # Nullable — logs pre-auth operations or system-initiated actions.
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    username: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )  # Denormalised so deleting a user doesn't lose audit history
+    action: Mapped[str] = mapped_column(
+        String(100), nullable=False, index=True
+    )  # e.g. "script.create", "variable.delete", "auth.login"
+    resource_type: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )  # e.g. "script", "variable", "cron_job"
+    resource_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    resource_name: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )  # Human-readable name at time of action
+    ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False, index=True
+    )

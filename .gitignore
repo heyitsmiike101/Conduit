@@ -36,6 +36,9 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Claude Code — session permissions and local settings (machine-specific, not source)
+.claude/
+
 # Editor
 .vscode/
 .idea/

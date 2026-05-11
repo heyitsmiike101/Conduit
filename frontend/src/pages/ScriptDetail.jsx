@@ -457,20 +457,6 @@ export default function ScriptDetail() {
   const [isUploading, setIsUploading] = useState(false)
   const dragCounter = useRef(0)
 
-  // Keep refs in sync
-  useEffect(() => { activeFilePathRef.current = activeFilePath }, [activeFilePath])
-  useEffect(() => { mainFileNameRef.current = mainFileName }, [mainFileName])
-
-  // Derive the main file name from the script's file_path once loaded
-  useEffect(() => {
-    if (!script) return
-    const name = script.file_path.split('/').pop() // basename of the file_path
-    setMainFileName(name)
-    mainFileNameRef.current = name
-    setActiveFilePath(name)
-    activeFilePathRef.current = name
-  }, [script?.id]) // run once per script, keyed by ID
-
   // ── Queries ──
 
   const { data: script, isLoading } = useQuery({
@@ -516,6 +502,20 @@ export default function ScriptDetail() {
     queryFn: listAccounts,
   })
   const accountName = accounts.find(a => a.id === script?.account_id)?.name
+
+  // Keep refs in sync
+  useEffect(() => { activeFilePathRef.current = activeFilePath }, [activeFilePath])
+  useEffect(() => { mainFileNameRef.current = mainFileName }, [mainFileName])
+
+  // Derive the main file name from the script's file_path once loaded
+  useEffect(() => {
+    if (!script) return
+    const name = script.file_path.split('/').pop() // basename of the file_path
+    setMainFileName(name)
+    mainFileNameRef.current = name
+    setActiveFilePath(name)
+    activeFilePathRef.current = name
+  }, [script?.id]) // run once per script, keyed by ID
 
   // ── Keep data refs current ──
   useEffect(() => { mainContentRef.current = mainContentData }, [mainContentData])

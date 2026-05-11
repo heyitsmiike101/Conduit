@@ -43,10 +43,35 @@ class EncryptionService:
     # ------------------------------------------------------------------
 
     def _load_or_create_key(self) -> Fernet:
-        """Load existing key or generate and persist a new one."""
+        """
+        Resolve the Fernet key using this priority order:
+
+        1. ENCRYPTION_KEY env var — allows injection from AWS Secrets Manager,
+           HashiCorp Vault, or any secrets manager without touching the filesystem.
+           Set it as a base64url-encoded Fernet key string.
+        2. Key file at data/.secret_key (mode 600) — the default for single-VPS.
+           Generated on first run if the file doesn't exist.
+
+        This design means multi-instance deployments can share one key via env var
+        while single-VPS deployments use the on-disk file with no extra config.
+        """
+        if settings.encryption_key:
+            return self._load_key_from_env(settings.encryption_key)
         if self._key_path.exists():
             return self._load_key()
         return self._generate_key()
+
+    def _load_key_from_env(self, key_value: str) -> Fernet:
+        """Load the Fernet key from the ENCRYPTION_KEY environment variable."""
+        try:
+            fernet = Fernet(key_value.encode())
+            logger.info("Loaded encryption key from ENCRYPTION_KEY environment variable")
+            return fernet
+        except (ValueError, TypeError) as exc:
+            raise EncryptionError(
+                "ENCRYPTION_KEY environment variable is not a valid Fernet key. "
+                "Generate one with: python3 -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            ) from exc
 
     def _generate_key(self) -> Fernet:
         """Generate a new Fernet key, write it to disk with mode 600."""

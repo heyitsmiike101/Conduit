@@ -311,6 +311,7 @@ After every build iteration:
 |---|------|---------|
 | 1 | 2026-05-07 | Initial architecture defined. No code written. |
 | 2 | 2026-05-10 | Full backend built and smoke-tested end-to-end. All 10 build steps + smoke test complete. Implementation ready for Iteration 2 (frontend + UI enhancements). |
+| 3 | 2026-05-10 | Security hardening: CORS fix, rate limiting, request size limits, ScriptDetail black-page bug fixed. Auth, encryption key backup, and audit logging implemented (all 10/10 tests pass). |
 
 ---
 
@@ -346,3 +347,63 @@ After every build iteration:
 - `notifications_service.create_notification` signature: `db` must be a required positional param, not `db=None` default — callers always have a session
 - `metrics_service.evaluate_thresholds` secondary sort: always include `.order_by(..., SystemMetric.id.desc())` to get deterministic "previous reading" under high write volume
 - Internal API logging endpoint only works with active executions — finish = 401 response. Use explicit execution_id guards in scripts that call `conduit.log_api_call()`
+
+---
+
+## 17. Iteration 3 — What Was Built
+
+**Security hardening (all complete, smoke-tested):**
+
+### CORS Fix
+- `cors_allowed_origins` default changed from `["*"]` to `["http://localhost:5173", "http://localhost:3000"]`
+- Added `@model_validator` in `config.py` that raises `ValueError` if `["*"]` is used (prevents the dangerous wildcard + credentials combination)
+- CORSMiddleware restricted to explicit HTTP method and header whitelists
+
+### Rate Limiting
+- `slowapi` integrated — 60 requests/minute per IP, in-memory storage
+- Returns HTTP 429 with descriptive message on violation
+
+### Request Size Limits
+- New middleware `app/middleware/size_limits.py`
+- File uploads: 100 MB max → HTTP 413
+- JSON payloads: 10 MB max → HTTP 413
+
+### Authentication
+- `core/security.py` fully implemented — replaced stub with real JWT + bcrypt auth
+- `hash_password()` / `verify_password()` — bcrypt, 12 rounds
+- `create_token()` — issues HS256 JWT, writes to `sessions` table for revocation support
+- `get_current_user()` — FastAPI dependency; validates Bearer JWT, checks session table, returns User or None
+- `require_user()` — raises HTTP 401 when `auth_enabled=True` and no valid token
+- `auth_enabled` config flag (default `False`) — platform stays open for local dev; flip to `True` for production
+- New endpoints under `/api/v1/auth/`:
+  - `POST /auth/setup` — create first admin (one-time, 409 if any user exists)
+  - `POST /auth/login` — returns JWT
+  - `POST /auth/logout` — revokes session token
+  - `GET /auth/me` — current user profile (always needs token)
+  - `POST /auth/change-password` — updates hash, revokes all sessions
+  - `GET /auth/status` — returns `auth_enabled`, `setup_complete`, `user_count`
+- All protected routes accept `Depends(require_user)` at router-mount level — zero per-route changes needed
+
+### Encryption Key Backup
+- `config.py`: new `encryption_key: str = ""` field — maps to `ENCRYPTION_KEY` env var
+- `encryption.py` priority: env var → key file → generate new key
+- Allows injection from AWS Secrets Manager, Vault, or any secrets manager
+- Key format: base64url-encoded Fernet key string
+
+### Audit Logging
+- New `AuditLog` DB model — append-only, never updated or deleted
+- Fields: `user_id`, `username` (denormalised), `action`, `resource_type`, `resource_id`, `resource_name`, `ip_address`, `metadata_json`, `created_at`
+- New `services/audit_service.py` — `audit()` function: fire-and-forget, errors never break callers
+- New `api/audit.py` — `GET /api/v1/audit-logs` with filters: `action`, `resource_type`, `resource_id`, `user_id`, `limit`, `offset`
+- Already wired into: `auth.setup`, `auth.login`, `auth.login_failed`, `auth.logout`, `auth.password_change`
+
+**Patterns established:**
+- `get_current_user` short-circuits (returns None) only when auth is OFF and no token is present; if a token exists it is always validated — this lets `/auth/me` work regardless of `auth_enabled`
+- Audit errors must never propagate — wrap all `audit()` calls are already inside try/except in the service
+- JWT secret auto-generated per process when not set via env var — set `JWT_SECRET` in `.env` for session persistence across restarts
+- `require_user` at router-mount level (`dependencies=[Depends(require_user)]`) is cleaner than per-route — all new routers added to `protected` dict in `_register_routers`
+
+**Gotchas:**
+- `get_current_user` must always try to validate a token if one is present, even when `auth_enabled=False` — otherwise `/auth/me` returns 500 when user is None
+- `change-password` and `/auth/me` use `get_current_user` (not `require_user`) so they always require a token, even with auth disabled
+- SQLite `sessions` table token column is 1024 chars — JWT tokens fit comfortably

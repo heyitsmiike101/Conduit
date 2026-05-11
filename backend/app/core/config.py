@@ -8,6 +8,8 @@ Pydantic-settings automatically reads from both sources.
 from pathlib import Path
 from typing import Any
 
+import secrets
+
 from pydantic import ConfigDict, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -54,7 +56,28 @@ class Settings(BaseSettings):
     # --- CORS ---
     # In .env, set as a comma-separated string:
     #   CORS_ALLOWED_ORIGINS="http://localhost:5173,https://myapp.com"
-    cors_allowed_origins: list[str] = ["*"]
+    # Default: allow localhost for development
+    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    # --- Authentication ---
+    # Set AUTH_ENABLED=true in .env to enforce login for all API requests.
+    # When false, all routes are open (safe for local development only).
+    auth_enabled: bool = False
+
+    # JWT signing secret. Auto-generated on first run if not set via env var.
+    # For production: set JWT_SECRET to a long random string and keep it safe.
+    # Rotating this secret invalidates all existing sessions.
+    jwt_secret: str = secrets.token_hex(32)
+
+    # How long a JWT token remains valid.
+    jwt_expiry_hours: int = 24
+
+    # --- Encryption Key (backup / multi-instance support) ---
+    # If set, the platform uses this key instead of reading from data/.secret_key.
+    # Use this to inject the key from AWS Secrets Manager, Vault, or similar.
+    # Format: base64url-encoded Fernet key (output of Fernet.generate_key()).
+    # Example .env:  ENCRYPTION_KEY="<base64url key>"
+    encryption_key: str = ""
 
     # --- Logging ---
     log_level: str = "INFO"
@@ -80,6 +103,22 @@ class Settings(BaseSettings):
     def resolve_paths(cls, value: Path) -> Path:
         """Ensure all paths are absolute."""
         return value.resolve()
+
+    @model_validator(mode="after")
+    def validate_cors_configuration(self) -> "Settings":
+        """
+        Enforce secure CORS configuration.
+
+        Never allow allow_origins=["*"] with allow_credentials=True, as this allows
+        any origin to make authenticated requests (CSRF vulnerability).
+        """
+        if "*" in self.cors_allowed_origins:
+            raise ValueError(
+                "CORS misconfiguration: cannot use allow_origins=['*'] with allow_credentials=True. "
+                "Set explicit allowed origins in CORS_ALLOWED_ORIGINS environment variable, "
+                "e.g. CORS_ALLOWED_ORIGINS='http://localhost:5173,https://app.example.com'"
+            )
+        return self
 
 
 # Exported singleton — import this everywhere

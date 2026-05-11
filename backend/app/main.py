@@ -25,9 +25,13 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.middleware.size_limits import request_size_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +146,13 @@ def _sync_check_script_files() -> None:
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
+    # Rate limiter (60 requests/minute per IP)
+    limiter = Limiter(
+        key_func=get_remote_address,
+        default_limits=["60/minute"],
+        storage_uri="memory://",
+    )
+
     app = FastAPI(
         title="Conduit",
         description="Multi-tenant Python automation platform",
@@ -151,13 +162,21 @@ def create_app() -> FastAPI:
         redoc_url="/redoc",
     )
 
-    # CORS — allow the frontend dev server and any configured origins
+    # Attach limiter to app state for use in routes
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    # Request size limiting — prevent disk/memory exhaustion
+    app.middleware("http")(request_size_limiter)
+
+    # CORS — restrict to configured origins and necessary HTTP methods/headers
+    # allow_origins validated in config.py to prevent ["*"] + allow_credentials=True
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
     )
 
     # Register all routers
@@ -166,8 +185,24 @@ def create_app() -> FastAPI:
     return app
 
 
+def _rate_limit_exceeded_handler(request, exc):
+    """Handle rate limit exceeded errors gracefully."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Rate limit exceeded. Maximum 60 requests per minute per IP address."
+        },
+    )
+
+
 def _register_routers(app: FastAPI) -> None:
     """Mount all API routers under /api/v1."""
+    from fastapi import Depends
+    from app.core.security import require_user
+
+    from app.api.auth import router as auth_router
+    from app.api.audit import router as audit_router
     from app.api.health import router as health_router
     from app.api.accounts import router as accounts_router
     from app.api.scripts import router as scripts_router
@@ -182,17 +217,26 @@ def _register_routers(app: FastAPI) -> None:
 
     api_prefix = "/api/v1"
 
+    # Auth routes — always open (login, setup, status don't require a token)
+    app.include_router(auth_router, prefix=api_prefix)
+
+    # All other routes respect require_user:
+    #   - auth_enabled=False → require_user returns None, routes work normally
+    #   - auth_enabled=True  → require_user enforces valid JWT on every request
+    protected = {"dependencies": [Depends(require_user)]}
+
     app.include_router(health_router, prefix=api_prefix)
-    app.include_router(accounts_router, prefix=api_prefix)
-    app.include_router(scripts_router, prefix=api_prefix)
-    app.include_router(variables_router, prefix=api_prefix)
-    app.include_router(executions_router, prefix=api_prefix)
-    app.include_router(cron_jobs_router, prefix=api_prefix)
-    app.include_router(tables_router, prefix=api_prefix)
-    app.include_router(notifications_router, prefix=api_prefix)
-    app.include_router(internal_router, prefix=api_prefix)
-    app.include_router(metrics_router, prefix=api_prefix)
-    app.include_router(settings_router, prefix=api_prefix)
+    app.include_router(accounts_router, prefix=api_prefix, **protected)
+    app.include_router(scripts_router, prefix=api_prefix, **protected)
+    app.include_router(variables_router, prefix=api_prefix, **protected)
+    app.include_router(executions_router, prefix=api_prefix, **protected)
+    app.include_router(cron_jobs_router, prefix=api_prefix, **protected)
+    app.include_router(tables_router, prefix=api_prefix, **protected)
+    app.include_router(notifications_router, prefix=api_prefix, **protected)
+    app.include_router(internal_router, prefix=api_prefix)  # Uses its own X-Execution-ID auth
+    app.include_router(metrics_router, prefix=api_prefix, **protected)
+    app.include_router(settings_router, prefix=api_prefix, **protected)
+    app.include_router(audit_router, prefix=api_prefix, **protected)
 
 
 # Create the application instance

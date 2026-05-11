@@ -4,6 +4,11 @@
 # --- Web framework ---
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
+slowapi>=0.1.9  # Rate limiting middleware
+
+# --- Authentication ---
+bcrypt>=4.1.0    # Password hashing
+PyJWT>=2.8.0     # JWT token encoding/decoding
 
 # --- Database ---
 sqlalchemy>=2.0.0
