@@ -160,7 +160,7 @@ function ScriptActivityRow({ s, scriptId }) {
               onClick={() => setExpanded(false)}
             >
               <StatusBadge status={exec.status} />
-              <span className="text-xs text-gray-500">{format(new Date(exec.started_at), 'MMM d HH:mm:ss')}</span>
+              <span className="text-xs text-gray-500">{format(utc(exec.started_at), 'MMM d HH:mm:ss')}</span>
               {exec.duration_seconds != null && (
                 <span className="text-xs font-mono text-gray-600">{exec.duration_seconds.toFixed(2)}s</span>
               )}
@@ -231,7 +231,9 @@ export default function Dashboard() {
   const succeeded  = completed.filter(e => e.status === 'success')
   const failed     = completed.filter(e => ['failed', 'error', 'timeout'].includes(e.status))
   const successPct = completed.length ? Math.round((succeeded.length / completed.length) * 100) : null
-  const todayExecs = useMemo(() => recentExecs.filter(e => isToday(new Date(e.started_at))), [recentExecs])
+  // Append 'Z' so the bare UTC string is parsed as UTC, not local time
+  const utc = (ts) => new Date(ts + 'Z')
+  const todayExecs = useMemo(() => recentExecs.filter(e => isToday(utc(e.started_at))), [recentExecs])
 
   const timed = completed.filter(e => e.duration_seconds != null)
   const avgDuration  = timed.length ? timed.reduce((s, e) => s + e.duration_seconds, 0) / timed.length : null
@@ -245,14 +247,6 @@ export default function Dashboard() {
     [failed, oneHourAgo]
   )
 
-  // Longest running CURRENT execution
-  const longestRunning = useMemo(() => {
-    const active = recentExecs.filter(e => e.status === 'running' && e.started_at)
-    if (!active.length) return null
-    const oldest = active.reduce((a, b) => new Date(a.started_at) < new Date(b.started_at) ? a : b)
-    const secs = Math.round((Date.now() - new Date(oldest.started_at)) / 1000)
-    return { name: scriptMap[oldest.script_id] ?? '…', secs }
-  }, [recentExecs, scriptMap])
 
   // ── Disk / memory from health ────────────────────────────────────────────
   const diskFreeGb  = health?.disk_free_gb
@@ -324,7 +318,7 @@ export default function Dashboard() {
           icon="⚡"
           label="Running now"
           value={running}
-          sub={longestRunning ? `${longestRunning.name} — ${longestRunning.secs}s` : 'Nothing running'}
+          sub={`Max ${health?.settings?.max_concurrent_scripts ?? '…'} concurrent`}
           color={running > 0 ? 'text-emerald-400' : 'text-gray-400'}
           pulse={running > 0}
         />
@@ -346,7 +340,13 @@ export default function Dashboard() {
           icon="🏃"
           label="Today's runs"
           value={todayExecs.length}
-          sub={successPct != null ? `${successPct}% success (last ${completed.length})` : 'No completed runs'}
+          sub={
+            todayExecs.length === 0
+              ? 'No runs yet today'
+              : successPct != null
+                ? `${successPct}% success rate today`
+                : 'Runs in progress'
+          }
           warn={successPct != null && successPct < 80}
           crit={successPct != null && successPct < 50}
         />
@@ -473,7 +473,7 @@ export default function Dashboard() {
                     <div className="text-sm text-gray-300 truncate">
                       {scriptMap[exec.script_id] ?? exec.script_id.slice(0, 8)}
                     </div>
-                    <div className="text-xs text-gray-600">{format(new Date(exec.started_at), 'MMM d HH:mm:ss')}</div>
+                    <div className="text-xs text-gray-600">{format(utc(exec.started_at), 'MMM d HH:mm:ss')}</div>
                   </div>
                   {exec.duration_seconds != null && (
                     <span className="text-xs font-mono text-gray-600 shrink-0">{exec.duration_seconds.toFixed(2)}s</span>
