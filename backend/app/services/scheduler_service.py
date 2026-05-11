@@ -88,9 +88,12 @@ def _trigger_script(script_id: str, cron_expression: str) -> None:
         try:
             await runner_service.run_script(script_id, db)
         except ScriptAlreadyRunningError as exc:
-            # Log + create a notification so the user sees why the cron skipped a run.
+            # A run is already queued — this cron firing is skipped to prevent pile-up.
+            # (If the script was merely running with no queued run, it would have been
+            # queued automatically without reaching this branch.)
             logger.warning(
-                "Cron-triggered run for script %s skipped: %s", script_id, exc,
+                "Cron-triggered run for script %s skipped — already queued: %s",
+                script_id, exc,
             )
             try:
                 from app.services.notifications_service import create_notification
@@ -100,8 +103,9 @@ def _trigger_script(script_id: str, cron_expression: str) -> None:
                     level=NotificationLevel.WARN,
                     category="cron_skipped",
                     message=(
-                        f"Scheduled run skipped — previous run is still "
-                        f"{exc.status} (execution {exc.existing_execution_id})."
+                        f"Scheduled run skipped — a run is already queued "
+                        f"(execution {exc.existing_execution_id}). "
+                        f"It will start once the current execution finishes."
                     ),
                     metadata={
                         "script_id": script_id,

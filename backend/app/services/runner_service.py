@@ -40,13 +40,13 @@ _QUEUE_STATE_PATH = settings.data_dir / "queue_state.json"
 
 class ScriptAlreadyRunningError(RuntimeError):
     """
-    Raised when a script run is requested while another instance of the same
-    script is already running or queued.
+    Raised when a cron or manual trigger tries to queue a script that already
+    has a QUEUED execution pending.
 
-    Conduit enforces single-instance execution per script: only one run of any
-    given script may be active at a time, to prevent file-lock contention,
-    duplicate API calls, race conditions on shared tables, and resource
-    contention from heavy automations triggering in parallel.
+    Conduit allows one in-flight run + one queued run per script at a time.
+    Accepting more would cause unbounded queue growth for frequently-firing crons.
+    If the script is only RUNNING (no queued run yet), the new trigger is queued
+    automatically and runs as soon as the current execution finishes.
     """
 
     def __init__(self, script_id: str, existing_execution_id: str, status: str) -> None:
@@ -54,9 +54,8 @@ class ScriptAlreadyRunningError(RuntimeError):
         self.existing_execution_id = existing_execution_id
         self.status = status
         super().__init__(
-            f"Script is already {status} (execution {existing_execution_id}). "
-            f"Conduit allows only one run per script at a time — wait for it to "
-            f"finish or cancel it before triggering again."
+            f"Script already has a queued execution ({existing_execution_id}). "
+            f"The pending run will start once the current execution finishes."
         )
 
 
@@ -72,6 +71,8 @@ class RunnerService:
         self._running_tasks: Dict[str, asyncio.Task] = {}
         # Pending queue: deque of (execution_id, script_id) tuples
         self._queue: Deque[Tuple[str, str]] = deque()
+        # Set of script_ids that are currently executing (for per-script single-instance tracking)
+        self._running_script_ids: set = set()
 
     # ------------------------------------------------------------------
     # Public interface
@@ -98,34 +99,43 @@ class RunnerService:
             ScriptAlreadyRunningError: If the script already has a running or
                 queued execution.
         """
-        # Single-instance guard — refuse to start a second run of the same script.
-        existing = (
+        # Per-script queue guard: allow at most one QUEUED run per script.
+        # (Running → queue the new one; already queued → reject to prevent pile-up.)
+        already_queued = (
             db.query(Execution)
             .filter(
                 Execution.script_id == script_id,
-                Execution.status.in_([ExecutionStatus.RUNNING, ExecutionStatus.QUEUED]),
+                Execution.status == ExecutionStatus.QUEUED,
             )
-            .order_by(Execution.started_at.desc())
             .first()
         )
-        if existing:
+        if already_queued:
             raise ScriptAlreadyRunningError(
                 script_id=script_id,
-                existing_execution_id=existing.id,
-                status=existing.status.value,
+                existing_execution_id=already_queued.id,
+                status=already_queued.status.value,
             )
 
         execution_id = str(uuid.uuid4())
 
+        # Determine whether to start immediately or queue:
+        #   • Script already running → queue so it runs sequentially after current run
+        #   • At concurrency limit  → queue until a slot opens
+        #   • Otherwise            → start immediately
+        script_is_running = script_id in self._running_script_ids
+        at_concurrency_limit = len(self._running_procs) >= settings.max_concurrent_scripts
+
         status: ExecutionStatus
-        if len(self._running_procs) < settings.max_concurrent_scripts:
-            status = ExecutionStatus.RUNNING
-        else:
+        if script_is_running or at_concurrency_limit:
             status = ExecutionStatus.QUEUED
             self._queue.append((execution_id, script_id))
+            reason = "script already running" if script_is_running else "concurrency limit reached"
             logger.info(
-                "Script %s queued (queue depth: %d)", script_id, len(self._queue)
+                "Script %s queued (%s, queue depth: %d)", script_id, reason, len(self._queue)
             )
+        else:
+            status = ExecutionStatus.RUNNING
+            self._running_script_ids.add(script_id)
 
         execution = Execution(
             id=execution_id,
@@ -148,6 +158,7 @@ class RunnerService:
         Sends SIGTERM to the subprocess if running, or removes from queue.
         """
         # Remove from queue if pending
+        cancelled_script_ids = {sid for eid, sid in self._queue if eid == execution_id}
         self._queue = deque(
             item for item in self._queue if item[0] != execution_id
         )
@@ -157,6 +168,12 @@ class RunnerService:
         if proc and proc.returncode is None:
             proc.terminate()
             logger.info("Sent SIGTERM to execution %s", execution_id)
+
+        # Clean up per-script tracking for cancelled items
+        for sid in cancelled_script_ids:
+            # Only discard if no other queued item references this script
+            if not any(s == sid for _, s in self._queue):
+                self._running_script_ids.discard(sid)
 
         # Update DB status
         exec_row = db.query(Execution).filter_by(id=execution_id).first()
@@ -422,6 +439,7 @@ class RunnerService:
                 cleanup_config(execution_id)
             self._running_procs.pop(execution_id, None)
             self._running_tasks.pop(execution_id, None)
+            self._running_script_ids.discard(script_id)
             db.close()
 
             # Start the next queued execution if any
@@ -464,15 +482,35 @@ class RunnerService:
             db.commit()
 
     async def _drain_queue(self, db: Session) -> None:
-        """Start queued executions up to the concurrency limit."""
-        while self._queue and len(self._running_procs) < settings.max_concurrent_scripts:
+        """
+        Start queued executions up to the concurrency limit.
+
+        Respects per-script sequential execution: if the next queued item's
+        script is still running (e.g. a cron-triggered second run waiting for
+        the first to finish), it is moved to the back of the queue and the next
+        candidate is tried instead. We attempt at most len(queue) pops per call
+        to prevent an infinite loop when all queued scripts are still running.
+        """
+        attempts = len(self._queue)
+        while self._queue and len(self._running_procs) < settings.max_concurrent_scripts and attempts > 0:
             execution_id, script_id = self._queue.popleft()
+            attempts -= 1
+
+            if script_id in self._running_script_ids:
+                # This script's previous run hasn't finished yet — hold it back.
+                self._queue.append((execution_id, script_id))
+                logger.debug(
+                    "Skipping queued execution %s — script %s still running",
+                    execution_id, script_id,
+                )
+                continue
 
             exec_row = db.query(Execution).filter_by(id=execution_id).first()
             if exec_row:
                 exec_row.status = ExecutionStatus.RUNNING
                 db.commit()
 
+            self._running_script_ids.add(script_id)
             task = asyncio.create_task(self._execute(execution_id, script_id))
             self._running_tasks[execution_id] = task
             logger.info(
