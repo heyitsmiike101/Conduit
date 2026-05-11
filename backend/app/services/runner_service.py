@@ -324,7 +324,11 @@ class RunnerService:
                 existing = env.get("PYTHONPATH", "")
                 env["PYTHONPATH"] = os.pathsep.join(tool_dirs + ([existing] if existing else []))
 
-            # Spawn the subprocess
+            # Spawn the subprocess.
+            # cwd is pinned to the script's own directory so that relative-path
+            # file operations (open('data.csv'), os.listdir('.'), etc.) resolve
+            # within the script folder rather than leaking the host working dir.
+            script_cwd = str(Path(script.file_path).parent)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable,
@@ -333,6 +337,7 @@ class RunnerService:
                     f"--conduit-execution-id={execution_id}",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    cwd=script_cwd,
                     env=env,
                 )
             except Exception as exc:
