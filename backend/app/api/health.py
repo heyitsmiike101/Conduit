@@ -33,10 +33,27 @@ def health_check(db: Session = Depends(get_db)) -> dict:
     # will return a 500, which is the correct signal for an unhealthy service.
     db.execute(__import__("sqlalchemy").text("SELECT 1"))
 
+    import psutil as _psutil
+    from app.core.config import settings as _settings
+    _disk  = _psutil.disk_usage(str(_settings.data_dir))
+    _mem   = _psutil.virtual_memory()
+    _cpu_count = _psutil.cpu_count(logical=True)
+
     return {
         "status": "ok",
         "active_executions": len(runner_service.get_active_executions()),
         "queue_depth": runner_service.get_queue_depth(),
+        # Disk
+        "disk_free_gb":  round(_disk.free  / (1024 ** 3), 2),
+        "disk_used_gb":  round(_disk.used  / (1024 ** 3), 2),
+        "disk_total_gb": round(_disk.total / (1024 ** 3), 2),
+        "disk_percent":  round(_disk.percent, 1),
+        # Memory
+        "memory_used_gb":  round(_mem.used  / (1024 ** 3), 2),
+        "memory_total_gb": round(_mem.total / (1024 ** 3), 2),
+        "memory_percent":  round(_mem.percent, 1),
+        # CPU
+        "cpu_count": _cpu_count,
         "settings": {
             "max_concurrent_scripts": settings.max_concurrent_scripts,
             "metrics_interval_seconds": settings.metrics_interval_seconds,

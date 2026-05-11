@@ -62,7 +62,8 @@ def collect_metrics(db: Session) -> Dict[str, float]:
     memory = psutil.virtual_memory().percent / 100.0
     disk_usage = psutil.disk_usage(str(settings.data_dir))
     disk = disk_usage.percent / 100.0
-    disk_used_gb = disk_usage.used / (1024 ** 3)
+    disk_used_gb = disk_usage.used  / (1024 ** 3)
+    disk_free_gb = disk_usage.free  / (1024 ** 3)
     active = float(len(runner_service.get_active_executions()))
     queue_depth = float(runner_service.get_queue_depth())
     failed_rate = _compute_failed_rate_1h(db)
@@ -85,6 +86,7 @@ def collect_metrics(db: Session) -> Dict[str, float]:
         "memory_percent": memory,
         "disk_percent": disk,
         "disk_used_gb": disk_used_gb,
+        "disk_free_gb": disk_free_gb,
         "active_scripts": active,
         "queue_depth": queue_depth,
         "failed_rate_1h": failed_rate,
