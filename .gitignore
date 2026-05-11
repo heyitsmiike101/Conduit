@@ -52,3 +52,10 @@ htmlcov/
 
 # Queue state (runtime, not source)
 queue_state.json
+
+# Internal planning and tracking documents — not for public repo
+instructions.md
+BUILD_PLAN.md
+SECURITY_AUDIT.md
+SECURITY_FIXES.md
+developer_documentation.md
