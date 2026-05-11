@@ -445,6 +445,7 @@ export default function ScriptDetail() {
   const [mainFileName, setMainFileName] = useState('script.py')
   const [dirtyFiles, setDirtyFiles] = useState(new Set())
   const [saveLabel, setSaveLabel] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
 
   const editorRef = useRef(null)
   const fileCache = useRef({})
@@ -565,28 +566,7 @@ export default function ScriptDetail() {
     onError: (e) => toast.error(e.message),
   })
 
-  const saveMainMutation = useMutation({
-    mutationFn: ({ content, label }) => saveScriptContent(id, { content, label: label || undefined }),
-    onSuccess: () => {
-      toast.success(`${mainFileName} saved`)
-      setDirtyFiles(prev => { const s = new Set(prev); s.delete(mainFileName); return s })
-      setSaveLabel('')
-      qc.invalidateQueries({ queryKey: ['script-content', id] })
-      qc.invalidateQueries({ queryKey: ['script-versions', id] })
-    },
-    onError: e => toast.error(e.message),
-  })
-
-  const saveFileMutation = useMutation({
-    mutationFn: ({ path, content }) => saveScriptFile(id, path, { content }),
-    onSuccess: (_, { path }) => {
-      toast.success(`${path} saved`)
-      setDirtyFiles(prev => { const s = new Set(prev); s.delete(path); return s })
-      qc.invalidateQueries({ queryKey: ['script-files', id] })
-      qc.invalidateQueries({ queryKey: ['script-versions', id] })
-    },
-    onError: e => toast.error(e.message),
-  })
+  // (individual save mutations kept for future targeted use — primary save path is handleSave below)
 
   const createFileMutation = useMutation({
     mutationFn: ({ filename, content = '' }) => createScriptFile(id, { filename, content }),
@@ -684,17 +664,42 @@ export default function ScriptDetail() {
     setActiveFilePath(path)
   }, [])
 
-  const handleSave = useCallback(() => {
-    const path = activeFilePathRef.current
-    const content = editorRef.current?.getValue()
-    if (content === undefined) return
-    fileCache.current[path] = content
-    if (path === mainFileNameRef.current) {
-      saveMainMutation.mutate({ content, label: saveLabel })
-    } else {
-      saveFileMutation.mutate({ path, content })
+  const handleSave = useCallback(async () => {
+    // Flush the editor's current value into the cache before collecting dirty files
+    const currentPath = activeFilePathRef.current
+    const currentValue = editorRef.current?.getValue()
+    if (currentValue !== undefined) fileCache.current[currentPath] = currentValue
+
+    const filesToSave = [...dirtyFiles]
+    if (filesToSave.length === 0) return
+
+    setIsSaving(true)
+    try {
+      await Promise.all(filesToSave.map(path => {
+        const content = fileCache.current[path] ?? ''
+        if (path === mainFileNameRef.current) {
+          return saveScriptContent(id, { content, label: saveLabel || undefined })
+        }
+        return saveScriptFile(id, path, { content })
+      }))
+
+      setDirtyFiles(new Set())
+      setSaveLabel('')
+      qc.invalidateQueries({ queryKey: ['script-content', id] })
+      qc.invalidateQueries({ queryKey: ['script-files', id] })
+      qc.invalidateQueries({ queryKey: ['script-versions', id] })
+
+      if (filesToSave.length === 1) {
+        toast.success(`${filesToSave[0]} saved`)
+      } else {
+        toast.success(`${filesToSave.length} files saved`)
+      }
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setIsSaving(false)
     }
-  }, [saveLabel, saveMainMutation, saveFileMutation])
+  }, [id, dirtyFiles, saveLabel, qc, toast])
 
   const handleCreate = useCallback((filename, onDone) => {
     createFileMutation.mutate({ filename, onDone })
@@ -709,7 +714,7 @@ export default function ScriptDetail() {
     const onKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()
-        if (dirtyFiles.has(activeFilePathRef.current)) handleSave()
+        if (dirtyFiles.size > 0) handleSave()
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -722,8 +727,8 @@ export default function ScriptDetail() {
 
   const isTool = script.script_type === 'tool'
   const hasRunning = executions.some(e => e.status === 'running')
-  const isActiveFileDirty = dirtyFiles.has(activeFilePath)
-  const isSaving = saveMainMutation.isPending || saveFileMutation.isPending
+  const dirtyCount = dirtyFiles.size
+  const anyDirty = dirtyCount > 0
 
   return (
     <div className="space-y-4">
@@ -824,9 +829,10 @@ export default function ScriptDetail() {
         <div className="px-4 py-2 border-b border-gray-800 flex items-center gap-2 bg-gray-900/60">
           <span className="text-xs font-mono text-gray-400 flex-1 truncate">
             {activeFilePath}
-            {isActiveFileDirty && <span className="text-yellow-400 ml-1.5" title="Unsaved changes">●</span>}
+            {dirtyFiles.has(activeFilePath) && <span className="text-yellow-400 ml-1.5" title="Unsaved changes">●</span>}
           </span>
-          {isActiveFileDirty && activeFilePath === mainFileName && (
+          {/* Version label — only when the main script file is among the dirty set */}
+          {dirtyFiles.has(mainFileName) && (
             <input
               className="input text-xs py-1 w-36"
               placeholder="Version label (optional)"
@@ -838,9 +844,15 @@ export default function ScriptDetail() {
           <button
             className="btn-primary text-xs shrink-0"
             onClick={handleSave}
-            disabled={!isActiveFileDirty || isSaving}
+            disabled={!anyDirty || isSaving}
           >
-            {isSaving ? 'Saving…' : isActiveFileDirty ? '● Save' : 'Saved'}
+            {isSaving
+              ? 'Saving…'
+              : dirtyCount > 1
+                ? `● Save all (${dirtyCount})`
+                : anyDirty
+                  ? '● Save'
+                  : 'Saved ✓'}
           </button>
           {activeFilePath !== mainFileName && (
             <button

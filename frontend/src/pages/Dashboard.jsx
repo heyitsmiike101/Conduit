@@ -4,7 +4,7 @@
  * collection cadence (default 30 s) so they never show stale data.
  */
 
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useState, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { format, isToday, subHours } from 'date-fns'
@@ -80,10 +80,13 @@ function MetricCard({ label, data, unit, color, fmt, min = 0, max = 1, warn, cri
 
 // ─── Stat card ────────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, sub, color = 'text-white', pulse = false, warn = false, crit = false, icon }) {
+function StatCard({ label, value, sub, color = 'text-white', pulse = false, warn = false, crit = false, icon, onClick }) {
   const c = crit ? 'text-red-400' : warn ? 'text-yellow-400' : color
   return (
-    <div className="card p-4 flex items-start gap-3">
+    <div
+      className={`card p-4 flex items-start gap-3 ${onClick ? 'cursor-pointer hover:bg-gray-800/60 transition-colors' : ''}`}
+      onClick={onClick}
+    >
       {icon && <div className="text-xl leading-none mt-0.5 shrink-0">{icon}</div>}
       <div className="flex-1 min-w-0">
         <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">{label}</div>
@@ -176,9 +179,111 @@ function ScriptActivityRow({ s, scriptId }) {
   )
 }
 
+// ─── Queue popup ─────────────────────────────────────────────────────────────
+
+function QueuePopup({ onClose, scriptMap }) {
+  const popupRef = useRef(null)
+
+  const { data: queuedExecs = [], isLoading } = useQuery({
+    queryKey: ['executions', 'queued'],
+    queryFn: () => listExecutions({ status: 'queued', limit: 50 }),
+    refetchInterval: POLL,
+    staleTime: 0,
+  })
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (popupRef.current && !popupRef.current.contains(e.target)) onClose()
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [onClose])
+
+  // Close on Escape
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center pt-32 px-4">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+
+      {/* Panel */}
+      <div
+        ref={popupRef}
+        className="relative bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-sm font-semibold text-white">Execution Queue</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {isLoading ? 'Loading…' : `${queuedExecs.length} job${queuedExecs.length !== 1 ? 's' : ''} waiting`}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-600 hover:text-gray-300 transition-colors text-lg leading-none px-1"
+          >×</button>
+        </div>
+
+        {/* Body */}
+        <div className="max-h-80 overflow-y-auto">
+          {isLoading ? (
+            <div className="p-6 text-center text-sm text-gray-600">Loading…</div>
+          ) : queuedExecs.length === 0 ? (
+            <div className="p-8 text-center">
+              <div className="text-2xl mb-2">✓</div>
+              <div className="text-sm text-gray-500">Queue is empty</div>
+              <div className="text-xs text-gray-700 mt-1">All scripts are running or idle</div>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-800">
+              {queuedExecs.map((exec, i) => (
+                <Link
+                  key={exec.id}
+                  to={`/scripts/${exec.script_id}`}
+                  onClick={onClose}
+                  className="flex items-center gap-3 px-5 py-3 hover:bg-gray-800/40 transition-colors"
+                >
+                  {/* Position badge */}
+                  <span className="text-xs font-mono text-gray-600 w-5 shrink-0 text-center">
+                    #{i + 1}
+                  </span>
+                  <StatusBadge status={exec.status} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-gray-200 truncate">
+                      {scriptMap[exec.script_id] ?? exec.script_id.slice(0, 8)}
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      Queued {format(new Date(exec.started_at + 'Z'), 'HH:mm:ss')}
+                    </div>
+                  </div>
+                  <span className="text-xs text-brand-500 shrink-0">View →</span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-gray-800 text-xs text-gray-700 text-center">
+          Updates every 3 s · click a row to open the script
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const [showQueue, setShowQueue] = useState(false)
+
   const { data: health, isError } = useQuery({
     queryKey: ['health'],
     queryFn: getHealth,
@@ -326,9 +431,10 @@ export default function Dashboard() {
           icon="⏳"
           label="Queued"
           value={queued}
-          sub={`Max ${health?.settings?.max_concurrent_scripts ?? '…'} concurrent`}
+          sub={queued > 0 ? 'Click to view queue' : `Max ${health?.settings?.max_concurrent_scripts ?? '…'} concurrent`}
           warn={queued > 5}
           crit={queued >= 10}
+          onClick={() => setShowQueue(true)}
         />
         <StatCard
           icon="📜"
@@ -426,6 +532,9 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ── Queue popup ──────────────────────────────────────────────────────── */}
+      {showQueue && <QueuePopup onClose={() => setShowQueue(false)} scriptMap={scriptMap} />}
 
       {/* ── Row 4: script activity + recent executions ─────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
