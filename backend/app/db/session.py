@@ -14,7 +14,7 @@ For future migration to Alembic:
 
 import logging
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from app.core.config import settings
@@ -27,13 +27,13 @@ logger = logging.getLogger(__name__)
 # Engine
 # ---------------------------------------------------------------------------
 
-# check_same_thread=False is required for SQLite when used with FastAPI's
-# async request handling — SQLAlchemy manages thread safety at a higher level.
-_connect_args = (
-    {"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
-    else {}
-)
+_is_sqlite = settings.database_url.startswith("sqlite")
+
+# check_same_thread=False: required for SQLite with FastAPI's async handling.
+# timeout=30: wait up to 30s for a lock instead of failing immediately — needed
+# in Docker where a restarting container may briefly overlap with the previous
+# one still holding a write lock during shutdown.
+_connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
 
 engine = create_engine(
     settings.database_url,
@@ -43,6 +43,19 @@ engine = create_engine(
     # but avoiding echo=True is cleaner and avoids the overhead entirely.
     echo=(settings.log_level.upper() == "DEBUG"),
 )
+
+if _is_sqlite:
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        # WAL mode: allows concurrent reads alongside a single writer, and
+        # survives crashes without requiring a full journal rollback on next open.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        # busy_timeout: SQLite-level retry duration (ms) when another connection
+        # holds a write lock — complements the Python-level timeout above.
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 
 # ---------------------------------------------------------------------------
