@@ -17,7 +17,6 @@ import time
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.db.models import Base
@@ -32,27 +31,28 @@ logger = logging.getLogger(__name__)
 _is_sqlite = settings.database_url.startswith("sqlite")
 
 # check_same_thread=False: required for SQLite with FastAPI's async handling.
-# timeout=30: Python sqlite3 retry window (seconds) when another connection
-# holds a write lock.
+# timeout=30: Python-level retry when sqlite3.connect() itself is blocked.
 _connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
+
+# SQLite is single-writer; use a pool of exactly one connection so all
+# operations in this process share it and never compete for file-level locks.
+# pool_size=1 / max_overflow=0 means a second caller waits (pool_timeout=30s)
+# rather than opening a second connection that would race for the lock.
+_pool_kwargs = {"pool_size": 1, "max_overflow": 0, "pool_timeout": 30} if _is_sqlite else {}
 
 engine = create_engine(
     settings.database_url,
     connect_args=_connect_args,
-    # NullPool for SQLite: skip connection pooling so no background connection
-    # ever holds a file-level lock between requests. On Docker Desktop (Windows/
-    # WSL2) pooled connections can leave stale locks that block DDL at startup.
-    poolclass=NullPool if _is_sqlite else None,
     echo=(settings.log_level.upper() == "DEBUG"),
+    **_pool_kwargs,
 )
 
 if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_conn, _record):
         cursor = dbapi_conn.cursor()
-        # busy_timeout: SQLite-level retry window (ms) — complements the
-        # Python-level timeout above for cases where a transaction holds a lock.
         cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 
