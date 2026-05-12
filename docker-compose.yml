@@ -12,8 +12,10 @@ services:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
       # Persistent data directory (database, scripts, logs, encryption key)
-      # Set DATA_DIR_HOST to use a custom path, e.g. /mnt/data/conduit
-      - ${DATA_DIR_HOST:-.}/conduit-data:/data
+      # Default: ./conduit-data (next to docker-compose.yml)
+      # Override: set DATA_DIR_HOST to the full path, e.g.
+      #   export DATA_DIR_HOST=/home/user/Docker/conduit
+      - ${DATA_DIR_HOST:-./conduit-data}:/data
     environment:
       DATA_DIR: /data
       DATABASE_URL: sqlite:////data/conduit.db
