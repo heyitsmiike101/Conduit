@@ -48,13 +48,12 @@ if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_conn, _record):
         cursor = dbapi_conn.cursor()
-        # WAL mode: allows concurrent reads alongside a single writer, and
-        # survives crashes without requiring a full journal rollback on next open.
-        cursor.execute("PRAGMA journal_mode=WAL")
-        # busy_timeout: SQLite-level retry duration (ms) when another connection
-        # holds a write lock — complements the Python-level timeout above.
+        # busy_timeout: how long SQLite retries (ms) when a write lock is held
+        # by another connection — prevents immediate "database is locked" errors
+        # during rapid Docker restarts. WAL mode is intentionally avoided: it
+        # uses mmap'd -wal/-shm files that are unreliable on Docker Desktop
+        # (Windows/WSL2) volume mounts.
         cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 
