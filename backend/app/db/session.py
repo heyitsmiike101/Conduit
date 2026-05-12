@@ -2,14 +2,10 @@
 Database session management for Conduit.
 
 Provides:
-  - engine       — SQLAlchemy engine (SQLite with thread-safety disabled for async use)
-  - SessionLocal — session factory, used directly in tests and scripts
-  - get_db()     — FastAPI dependency that yields a session and closes it on exit
+  - engine       — SQLAlchemy engine
+  - SessionLocal — session factory
+  - get_db()     — FastAPI dependency that yields a session per request
   - init_db()    — creates all tables on first run (idempotent)
-
-For future migration to Alembic:
-  Replace init_db() with `alembic upgrade head` in the startup sequence.
-  SessionLocal and get_db() stay the same.
 """
 
 import logging
@@ -30,28 +26,20 @@ logger = logging.getLogger(__name__)
 
 _is_sqlite = settings.database_url.startswith("sqlite")
 
-# check_same_thread=False: required for SQLite with FastAPI's async handling.
-# timeout=30: Python-level retry when sqlite3.connect() itself is blocked.
-_connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
-
-# SQLite is single-writer; use a pool of exactly one connection so all
-# operations in this process share it and never compete for file-level locks.
-# pool_size=1 / max_overflow=0 means a second caller waits (pool_timeout=30s)
-# rather than opening a second connection that would race for the lock.
-_pool_kwargs = {"pool_size": 1, "max_overflow": 0, "pool_timeout": 30} if _is_sqlite else {}
+# SQLite only: disable same-thread check (FastAPI uses multiple threads)
+_connect_args = {"check_same_thread": False} if _is_sqlite else {}
 
 engine = create_engine(
     settings.database_url,
     connect_args=_connect_args,
     echo=(settings.log_level.upper() == "DEBUG"),
-    **_pool_kwargs,
 )
 
 if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_conn, _record):
         cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
@@ -64,7 +52,7 @@ SessionLocal = sessionmaker(
     bind=engine,
     autocommit=False,
     autoflush=False,
-    expire_on_commit=False,  # Avoid lazy-load errors after commit in async contexts
+    expire_on_commit=False,
 )
 
 
@@ -74,17 +62,6 @@ SessionLocal = sessionmaker(
 
 
 def get_db():
-    """
-    Yield a database session for a single request, then close it.
-
-    Usage in a route:
-        from fastapi import Depends
-        from app.db import get_db
-
-        @router.get("/things")
-        def list_things(db: Session = Depends(get_db)):
-            ...
-    """
     db = SessionLocal()
     try:
         yield db
@@ -96,82 +73,50 @@ def get_db():
 # Startup helper
 # ---------------------------------------------------------------------------
 
+# TIMESTAMP is the correct type for PostgreSQL; SQLite accepts DATETIME.
+_ts_type = "DATETIME" if _is_sqlite else "TIMESTAMP"
+
 
 def _run_migrations(conn) -> None:
     """
-    Apply lightweight additive migrations for columns that were added after
-    the initial create_all. Each migration is idempotent — safe to run every
-    startup. Only needed until Alembic is introduced (deferred to future iter).
+    Additive column migrations applied on every startup (idempotent).
+    Each block checks whether the column exists before altering the table.
     """
     inspector = inspect(conn)
 
-    # ── variables.variable_type (added Iteration 2 patch) ─────────────────
-    existing_cols = {c["name"] for c in inspector.get_columns("variables")}
-    if "variable_type" not in existing_cols:
+    var_cols = {c["name"] for c in inspector.get_columns("variables")}
+    if "variable_type" not in var_cols:
         conn.execute(text("ALTER TABLE variables ADD COLUMN variable_type VARCHAR(50) NOT NULL DEFAULT 'config'"))
-        logger.info("Migration: added variables.variable_type column")
+        logger.info("Migration: added variables.variable_type")
+    if "updated_at" not in var_cols:
+        conn.execute(text(f"ALTER TABLE variables ADD COLUMN updated_at {_ts_type}"))
+        logger.info("Migration: added variables.updated_at")
 
-    if "updated_at" not in existing_cols:
-        conn.execute(text("ALTER TABLE variables ADD COLUMN updated_at DATETIME"))
-        logger.info("Migration: added variables.updated_at column")
-
-    # ── scripts.selected_variable_ids ─────────────────────────────────────
     script_cols = {c["name"] for c in inspector.get_columns("scripts")}
     if "selected_variable_ids" not in script_cols:
         conn.execute(text("ALTER TABLE scripts ADD COLUMN selected_variable_ids TEXT"))
-        logger.info("Migration: added scripts.selected_variable_ids column")
+        logger.info("Migration: added scripts.selected_variable_ids")
 
-    # ── script_versions.file_path ──────────────────────────────────────────
     if inspector.has_table("script_versions"):
-        version_cols = {c["name"] for c in inspector.get_columns("script_versions")}
-        if "file_path" not in version_cols:
+        ver_cols = {c["name"] for c in inspector.get_columns("script_versions")}
+        if "file_path" not in ver_cols:
             conn.execute(text("ALTER TABLE script_versions ADD COLUMN file_path VARCHAR(500)"))
-            logger.info("Migration: added script_versions.file_path column")
+            logger.info("Migration: added script_versions.file_path")
 
 
-def init_db(retries: int = 8, delay: float = 2.0) -> None:
+def init_db() -> None:
     """
-    Create all tables defined in models.py if they do not already exist.
-
-    This is idempotent — safe to call on every startup. Does not drop or
-    modify existing tables. Logs the table count on success.
-
-    Retries on "database is locked" — can occur on Docker Desktop (Windows)
-    when stale WAL/SHM files from a previous run are still being cleaned up.
-    If the lock persists across all retries, re-raises the original error.
-    Delete conduit.db / conduit.db-wal / conduit.db-shm to hard-reset.
+    Create all tables if they don't exist, then run additive column migrations.
+    Idempotent — safe to call on every startup.
     """
-    last_exc: Exception | None = None
-    for attempt in range(retries):
-        try:
-            Base.metadata.create_all(bind=engine)
-            last_exc = None
-            break
-        except Exception as exc:
-            last_exc = exc
-            if "database is locked" not in str(exc).lower():
-                raise
-            logger.warning(
-                "Database locked during init (attempt %d/%d), retrying in %.0fs...",
-                attempt + 1, retries, delay,
-            )
-            time.sleep(delay)
+    Base.metadata.create_all(bind=engine)
 
-    if last_exc is not None:
-        raise RuntimeError(
-            "Database still locked after all retries. "
-            "Delete conduit.db / conduit.db-wal / conduit.db-shm in your data directory and restart."
-        ) from last_exc
-
-    # Run additive column migrations (idempotent)
     with engine.begin() as conn:
         _run_migrations(conn)
 
-    # Count tables to confirm creation
-    inspector = inspect(engine)
-    table_names = inspector.get_table_names()
+    table_names = inspect(engine).get_table_names()
     logger.info(
-        "Database initialized — %d tables ready: %s",
+        "Database initialized — %d tables: %s",
         len(table_names),
         ", ".join(sorted(table_names)),
     )

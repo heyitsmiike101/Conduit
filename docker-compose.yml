@@ -1,24 +1,41 @@
 version: "3.8"
 
 services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: conduit-db
+    environment:
+      POSTGRES_DB: conduit
+      POSTGRES_USER: conduit
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-conduit}
+    volumes:
+      - ${DATA_DIR_HOST:-./conduit-data}/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conduit -d conduit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ── Conduit ────────────────────────────────────────────────────────────────
   conduit:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: conduit
+    depends_on:
+      db:
+        condition: service_healthy   # wait for postgres before starting
     ports:
-      # Frontend and backend are both served on port 8000 in Docker
-      # (Vite is pre-built; FastAPI serves static files)
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      # Persistent data directory (database, scripts, logs, encryption key)
-      # Default: ./conduit-data (next to docker-compose.yml)
-      # Override: set DATA_DIR_HOST to the full path, e.g.
-      #   export DATA_DIR_HOST=/home/user/Docker/conduit
       - ${DATA_DIR_HOST:-./conduit-data}:/data
     environment:
       DATA_DIR: /data
-      DATABASE_URL: sqlite:////data/conduit.db
+      DATABASE_URL: postgresql://conduit:${POSTGRES_PASSWORD:-conduit}@db:5432/conduit
 
       MAX_CONCURRENT_SCRIPTS: ${MAX_CONCURRENT_SCRIPTS:-10}
       METRICS_INTERVAL_SECONDS: ${METRICS_INTERVAL_SECONDS:-30}
@@ -26,23 +43,22 @@ services:
       CRITICAL_THRESHOLD: ${CRITICAL_THRESHOLD:-0.90}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
-      # In Docker the frontend is served from port 8000 (same origin as the API),
-      # so "*" is safe here. For internet-facing deployments set an explicit origin.
+      # Frontend is served on the same origin (port 8000), so * is safe here.
+      # For internet-facing deployments set an explicit origin.
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
 
-      # Auth — disabled by default. Set AUTH_ENABLED=true for any shared deployment.
+      # Auth — disabled by default. Enable for any shared/public deployment.
       AUTH_ENABLED: ${AUTH_ENABLED:-false}
-      # SECURITY: change JWT_SECRET before exposing this to a network.
+      # SECURITY: set a strong JWT_SECRET before exposing to a network.
       # Generate: python -c "import secrets; print(secrets.token_hex(32))"
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
       JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-24}
 
-      # Encryption key (auto-generated in /data/.secret_key if omitted)
       # ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
 
     restart: unless-stopped
 
-    # Resource limits — uncomment and tune based on your workload
+    # Resource limits — uncomment and tune to your workload
     # deploy:
     #   resources:
     #     limits:
@@ -64,8 +80,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-# Named volume alternative — uncomment to use Docker-managed storage
-# volumes:
-#   conduit-data:
-#     driver: local
