@@ -42,3 +42,17 @@ export const uploadScriptFile = (id, path, file) => {
   form.append('file', file)
   return api.postForm(`/scripts/${id}/upload`, form)
 }
+
+// Downloads — files placed in {script_dir}/downloads/ by the script at runtime
+export const listScriptDownloads = (id) => api.get(`/scripts/${id}/downloads`)
+
+/** Returns the URL to download or inline-preview a file. */
+export const downloadUrl = (id, filename, inline = false) =>
+  `/api/v1/scripts/${id}/downloads/${encodePath(filename)}${inline ? '?inline=true' : ''}`
+
+/** Fetch a text-based download file and return its string content for preview. */
+export const getDownloadText = async (id, filename) => {
+  const res = await fetch(downloadUrl(id, filename, true))
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.text()
+}

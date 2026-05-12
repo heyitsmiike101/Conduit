@@ -19,6 +19,7 @@ import {
   listScriptVersions, getScriptVersion, revertScriptVersion,
   getScriptConfig, saveScriptVariables,
   listScriptFiles, getScriptFile, saveScriptFile, createScriptFile, deleteScriptFile, uploadScriptFile,
+  listScriptDownloads, downloadUrl, getDownloadText,
 } from '../api/scripts'
 import { listExecutions, getExecutionLogs, triggerExecution, cancelExecution } from '../api/executions'
 import { listCronJobs } from '../api/cronJobs'
@@ -82,6 +83,137 @@ function ExecutionLogPanel({ execId }) {
             ))
         }
       </div>
+    </div>
+  )
+}
+
+// ─── Downloads panel ─────────────────────────────────────────────────────────
+
+const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'ico'])
+const TEXT_EXTS  = new Set(['txt', 'log', 'csv', 'json', 'yaml', 'yml', 'xml', 'md', 'html', 'toml', 'ini'])
+
+function dlExt(name) { return (name.split('.').pop() || '').toLowerCase() }
+function dlIcon(name) {
+  const ext = dlExt(name)
+  if (IMAGE_EXTS.has(ext)) return '🖼️'
+  if (TEXT_EXTS.has(ext))  return '📄'
+  if (['zip','gz','tar','bz2'].includes(ext)) return '📦'
+  if (['pdf'].includes(ext)) return '📕'
+  return '📎'
+}
+function formatBytes(b) {
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function DownloadsPanel({ scriptId }) {
+  const [preview, setPreview] = useState(null) // { name, type, content|url }
+
+  const { data: files = [] } = useQuery({
+    queryKey: ['script-downloads', scriptId],
+    queryFn: () => listScriptDownloads(scriptId),
+    refetchInterval: 5_000,
+  })
+
+  async function openPreview(file) {
+    const ext = dlExt(file.name)
+    if (IMAGE_EXTS.has(ext)) {
+      setPreview({ name: file.name, type: 'image', url: downloadUrl(scriptId, file.name, true) })
+    } else if (TEXT_EXTS.has(ext)) {
+      try {
+        const content = await getDownloadText(scriptId, file.name)
+        setPreview({ name: file.name, type: 'text', content })
+      } catch (e) {
+        setPreview({ name: file.name, type: 'error', content: e.message })
+      }
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="px-4 py-3 border-b border-gray-800 text-sm font-medium text-gray-300 flex items-center justify-between">
+        <span>Downloads</span>
+        <span className="text-xs text-gray-600 font-normal">
+          Files written to <code className="bg-gray-800 px-1 rounded">downloads/</code> in the script directory
+        </span>
+      </div>
+
+      {files.length === 0 ? (
+        <div className="p-6 text-sm text-gray-600 text-center">
+          No files yet — write files to the <code className="bg-gray-800 px-1 rounded text-gray-500">downloads/</code> folder in your script to make them appear here
+        </div>
+      ) : (
+        <div className="divide-y divide-gray-800">
+          {files.map(f => {
+            const ext = dlExt(f.name)
+            const canPreview = IMAGE_EXTS.has(ext) || TEXT_EXTS.has(ext)
+            return (
+              <div key={f.name} className="px-4 py-2.5 flex items-center gap-3 text-sm hover:bg-gray-800/30">
+                <span className="text-base">{dlIcon(f.name)}</span>
+                <span className="flex-1 min-w-0 font-mono text-gray-300 truncate" title={f.name}>{f.name}</span>
+                <span className="text-gray-600 text-xs shrink-0">{formatBytes(f.size)}</span>
+                <span className="text-gray-600 text-xs shrink-0 hidden sm:block">
+                  {format(new Date(f.modified_at), 'MMM d HH:mm')}
+                </span>
+                {canPreview && (
+                  <button
+                    onClick={() => openPreview(f)}
+                    className="text-xs text-blue-400 hover:text-blue-300 shrink-0"
+                  >
+                    Preview
+                  </button>
+                )}
+                <a
+                  href={downloadUrl(scriptId, f.name)}
+                  download={f.name}
+                  className="text-xs text-indigo-400 hover:text-indigo-300 shrink-0"
+                >
+                  Download
+                </a>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Preview modal */}
+      {preview && (
+        <div
+          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-4xl max-h-[85vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+              <span className="text-sm font-mono text-gray-300 truncate">{preview.name}</span>
+              <div className="flex items-center gap-3 shrink-0">
+                <a
+                  href={downloadUrl(scriptId, preview.name)}
+                  download={preview.name}
+                  className="text-xs text-indigo-400 hover:text-indigo-300"
+                >
+                  Download
+                </a>
+                <button onClick={() => setPreview(null)} className="text-gray-500 hover:text-gray-300 text-lg leading-none">×</button>
+              </div>
+            </div>
+            <div className="overflow-auto flex-1 p-4">
+              {preview.type === 'image' && (
+                <img src={preview.url} alt={preview.name} className="max-w-full mx-auto rounded" />
+              )}
+              {preview.type === 'text' && (
+                <pre className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed">{preview.content}</pre>
+              )}
+              {preview.type === 'error' && (
+                <p className="text-red-400 text-sm">Failed to load preview: {preview.content}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -910,6 +1042,9 @@ export default function ScriptDetail() {
         />
         {!isTool && <InjectedConfig scriptId={id} />}
       </div>
+
+      {/* Downloads — files written to downloads/ by the script */}
+      {!isTool && <DownloadsPanel scriptId={id} />}
 
       {/* Execution history (scripts only) */}
       {!isTool && (

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -670,3 +671,62 @@ async def upload_script_file_binary(
         "size": len(contents),
         "modified_at": datetime.utcfromtimestamp(target.stat().st_mtime).isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Downloads — files placed in {script_dir}/downloads/ by the script at runtime
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{script_id}/downloads", response_model=List[Dict[str, Any]])
+def list_downloads(script_id: str, db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
+    """
+    List files in the script's downloads/ subdirectory.
+    Returns an empty list if the directory doesn't exist yet.
+    Files are sorted newest-first by modification time.
+    """
+    script = _get_script_or_404(script_id, db)
+    downloads_dir = Path(script.file_path).parent / "downloads"
+    if not downloads_dir.exists():
+        return []
+
+    files = []
+    for f in downloads_dir.rglob("*"):
+        if not f.is_file():
+            continue
+        stat = f.stat()
+        files.append({
+            "name": str(f.relative_to(downloads_dir)),
+            "size": stat.st_size,
+            "modified_at": datetime.utcfromtimestamp(stat.st_mtime).isoformat(),
+        })
+
+    files.sort(key=lambda f: f["modified_at"], reverse=True)
+    return files
+
+
+@router.get("/{script_id}/downloads/{filename:path}")
+def get_download(
+    script_id: str,
+    filename: str,
+    inline: bool = False,
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """
+    Serve a file from the script's downloads/ directory.
+
+    ?inline=true  — Content-Disposition: inline  (browser renders in-tab, good for preview)
+    ?inline=false — Content-Disposition: attachment (forces download, default)
+    """
+    script = _get_script_or_404(script_id, db)
+    downloads_dir = Path(script.file_path).parent / "downloads"
+    target = _resolve_safe_path(downloads_dir, filename)
+
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail=f"Download '{filename}' not found")
+
+    return FileResponse(
+        str(target),
+        filename=target.name,
+        content_disposition_type="inline" if inline else "attachment",
+    )
