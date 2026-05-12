@@ -13,9 +13,11 @@ For future migration to Alembic:
 """
 
 import logging
+import time
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.db.models import Base
@@ -30,17 +32,17 @@ logger = logging.getLogger(__name__)
 _is_sqlite = settings.database_url.startswith("sqlite")
 
 # check_same_thread=False: required for SQLite with FastAPI's async handling.
-# timeout=30: wait up to 30s for a lock instead of failing immediately — needed
-# in Docker where a restarting container may briefly overlap with the previous
-# one still holding a write lock during shutdown.
+# timeout=30: Python sqlite3 retry window (seconds) when another connection
+# holds a write lock.
 _connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
 
 engine = create_engine(
     settings.database_url,
     connect_args=_connect_args,
-    # Only echo SQL when log level is DEBUG. configure_logging() also suppresses
-    # the sqlalchemy.engine logger to WARNING in non-debug mode as a safety net,
-    # but avoiding echo=True is cleaner and avoids the overhead entirely.
+    # NullPool for SQLite: skip connection pooling so no background connection
+    # ever holds a file-level lock between requests. On Docker Desktop (Windows/
+    # WSL2) pooled connections can leave stale locks that block DDL at startup.
+    poolclass=NullPool if _is_sqlite else None,
     echo=(settings.log_level.upper() == "DEBUG"),
 )
 
@@ -48,11 +50,8 @@ if _is_sqlite:
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_conn, _record):
         cursor = dbapi_conn.cursor()
-        # busy_timeout: how long SQLite retries (ms) when a write lock is held
-        # by another connection — prevents immediate "database is locked" errors
-        # during rapid Docker restarts. WAL mode is intentionally avoided: it
-        # uses mmap'd -wal/-shm files that are unreliable on Docker Desktop
-        # (Windows/WSL2) volume mounts.
+        # busy_timeout: SQLite-level retry window (ms) — complements the
+        # Python-level timeout above for cases where a transaction holds a lock.
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
@@ -130,17 +129,39 @@ def _run_migrations(conn) -> None:
             logger.info("Migration: added script_versions.file_path column")
 
 
-def init_db() -> None:
+def init_db(retries: int = 8, delay: float = 2.0) -> None:
     """
     Create all tables defined in models.py if they do not already exist.
 
     This is idempotent — safe to call on every startup. Does not drop or
     modify existing tables. Logs the table count on success.
 
-    For production environments that need migrations, replace this with
-    Alembic (deferred to a future iteration).
+    Retries on "database is locked" — can occur on Docker Desktop (Windows)
+    when stale WAL/SHM files from a previous run are still being cleaned up.
+    If the lock persists across all retries, re-raises the original error.
+    Delete conduit.db / conduit.db-wal / conduit.db-shm to hard-reset.
     """
-    Base.metadata.create_all(bind=engine)
+    last_exc: Exception | None = None
+    for attempt in range(retries):
+        try:
+            Base.metadata.create_all(bind=engine)
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            if "database is locked" not in str(exc).lower():
+                raise
+            logger.warning(
+                "Database locked during init (attempt %d/%d), retrying in %.0fs...",
+                attempt + 1, retries, delay,
+            )
+            time.sleep(delay)
+
+    if last_exc is not None:
+        raise RuntimeError(
+            "Database still locked after all retries. "
+            "Delete conduit.db / conduit.db-wal / conduit.db-shm in your data directory and restart."
+        ) from last_exc
 
     # Run additive column migrations (idempotent)
     with engine.begin() as conn:
