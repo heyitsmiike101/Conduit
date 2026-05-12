@@ -14,14 +14,16 @@ FROM python:3.11-slim-bookworm
 LABEL maintainer="Conduit"
 LABEL description="Conduit — self-hosted Python automation platform with UI"
 
-# Runtime system deps only:
-#   git   — available to user scripts at runtime
-#   curl  — used by the HEALTHCHECK
+# Runtime system deps:
+#   git            — available to user scripts at runtime
+#   curl           — used by the HEALTHCHECK
+#   gosu           — privilege drop in entrypoint (root → conduit) with correct signal forwarding
 #   build-essential — required by uvloop (uvicorn[standard]) + cryptography C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     curl \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -51,17 +53,16 @@ ENV PYTHONUNBUFFERED=1 \
     UVICORN_HOST=0.0.0.0 \
     UVICORN_PORT=8000
 
-# Create data dir, non-root user, and hand ownership in one layer
+# Create the app user and /data — ownership of /data is re-applied at runtime
+# by the entrypoint so host volume mounts with different ownership still work
 RUN mkdir -p /data \
     && useradd -m -u 1000 conduit \
-    && chown -R conduit:conduit /app /data
-
-USER conduit
+    && chown -R conduit:conduit /app
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# exec form so PID 1 receives SIGTERM directly (no shell wrapper)
+# Entrypoint runs as root so it can fix /data ownership, then drops to conduit
 ENTRYPOINT ["./docker-entrypoint.sh"]
