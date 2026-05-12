@@ -6,12 +6,44 @@ Pydantic-settings automatically reads from both sources.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_origin
+import typing
 
 import secrets
 
 from pydantic import ConfigDict, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
+
+
+class CommaListEnvSource(EnvSettingsSource):
+    """
+    Custom env source that parses comma-separated strings as lists.
+
+    pydantic-settings v2 tries to JSON-decode list fields from env vars,
+    which breaks when the value is a plain string like 'http://localhost:5173'
+    or a wildcard '*'. This subclass intercepts list fields by annotation
+    (not value_is_complex, which varies across pydantic-settings versions)
+    and parses comma-separated values directly.
+    """
+
+    def prepare_field_value(
+        self, field_name: str, field: FieldInfo, value: Any, value_is_complex: bool
+    ) -> Any:
+        # Detect list fields by annotation — more reliable than value_is_complex
+        # across pydantic-settings 2.x versions
+        if get_origin(field.annotation) is list:
+            # Normalize bytes to str (some pydantic-settings versions pass bytes)
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return []
+                # Let JSON arrays/objects pass through to the standard decoder
+                if not (stripped.startswith("[") or stripped.startswith("{")):
+                    return [v.strip() for v in stripped.split(",") if v.strip()]
+        return super().prepare_field_value(field_name, field, value, value_is_complex)
 
 # Resolve the repo root once — config.py is at backend/app/core/config.py,
 # so parents[3] is the repo root (Conduit/).
@@ -37,6 +69,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         frozen=False,   # allow runtime mutation via PATCH /settings
     )
+
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings):
+        """Use our custom env source that handles comma-separated list fields."""
+        return (
+            init_settings,
+            CommaListEnvSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # --- Paths ---
     data_dir: Path = _REPO_ROOT / "data"
@@ -82,14 +124,6 @@ class Settings(BaseSettings):
     # --- Logging ---
     log_level: str = "INFO"
 
-    @field_validator("cors_allowed_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, value: Any) -> list[str]:
-        """Allow comma-separated string from environment variables."""
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
-
     @field_validator("max_concurrent_scripts", mode="after")
     @classmethod
     def validate_concurrency(cls, value: int) -> int:
@@ -109,15 +143,21 @@ class Settings(BaseSettings):
         """
         Enforce secure CORS configuration.
 
-        Never allow allow_origins=["*"] with allow_credentials=True, as this allows
-        any origin to make authenticated requests (CSRF vulnerability).
+        For internal-only deployments, allow_origins=["*"] is acceptable.
+        For public deployments, use explicit origins.
         """
+        # Allow "*" wildcard for internal use (behind firewall)
+        # Production public-facing deployments should use explicit origins
         if "*" in self.cors_allowed_origins:
-            raise ValueError(
-                "CORS misconfiguration: cannot use allow_origins=['*'] with allow_credentials=True. "
-                "Set explicit allowed origins in CORS_ALLOWED_ORIGINS environment variable, "
-                "e.g. CORS_ALLOWED_ORIGINS='http://localhost:5173,https://app.example.com'"
-            )
+            # If wildcard is used, authentication should be enabled for security
+            if not self.auth_enabled:
+                import warnings
+                warnings.warn(
+                    "WARNING: CORS_ALLOWED_ORIGINS=* is set without AUTH_ENABLED=true. "
+                    "This is only safe for internal networks behind a firewall. "
+                    "For production, enable authentication or use explicit origins.",
+                    RuntimeWarning
+                )
         return self
 
 
