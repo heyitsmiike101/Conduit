@@ -5,8 +5,8 @@
 
 # Node
 node_modules
-npm-debug.log
-yarn-error.log
+npm-debug.log*
+yarn-error.log*
 .npm
 
 # Python
@@ -18,44 +18,50 @@ __pycache__
 venv/
 ENV/
 env/
-*.egg-info
-.eggs
-dist/
-build/
-.pytest_cache
+*.egg-info/
+.eggs/
+.pytest_cache/
 .coverage
-.tox
+.tox/
+backend/tests/
+
+# Frontend build output — built fresh inside Docker; local dist not needed
+frontend/dist/
 
 # IDE
-.vscode
-.idea
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
 .DS_Store
+Thumbs.db
 
-# Runtime
+# Runtime / secrets — never bake data or credentials into the image
 data/
-*.db
-.secret_key
 conduit-data/
+*.db
+*.db-wal
+*.db-shm
+.secret_key
 .env
+.env.*
+!.env.docker.example
+
+# Logs
+*.log
 
 # CI/CD
-.github
+.github/
 .gitlab-ci.yml
-.circleci
+.circleci/
 
-# Documentation
+# Documentation (not needed at runtime)
 docs/
 *.md
 LICENSE
 
-# Docker
+# Docker files themselves (not needed in build context)
 Dockerfile*
 docker-compose*.yml
 .dockerignore
-
-# OS
-.DS_Store
-Thumbs.db

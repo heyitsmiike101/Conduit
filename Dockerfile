@@ -1,70 +1,67 @@
 # Multi-stage build for Conduit — backend + frontend in one container
-# Stage 1: Build frontend assets
-FROM node:20-alpine AS frontend-builder
+#
+# Stage 1: Build frontend assets (Node stays here — not copied to final image)
+FROM node:20-alpine3.21 AS frontend-builder
 WORKDIR /app/frontend
+# Copy manifests first so npm ci is cached independently of source changes
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 2: Final image — Python + Node runtime
-FROM python:3.11-slim
+# Stage 2: Runtime image — Python only (Node is build-time only)
+FROM python:3.11-slim-bookworm
 LABEL maintainer="Conduit"
 LABEL description="Conduit — self-hosted Python automation platform with UI"
 
-# Install system dependencies (git for script execution, nodejs for runtime)
+# Runtime system deps only:
+#   git   — available to user scripts at runtime
+#   curl  — used by the HEALTHCHECK
+#   build-essential — required by uvloop (uvicorn[standard]) + cryptography C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     git \
     curl \
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
 WORKDIR /app
 
-# Copy backend code
+# Install Python dependencies before copying source so this layer is cached
+# independently — a code change won't re-run pip install
 COPY backend/requirements.txt ./backend/
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
-# Copy entire backend
+# Copy application source
 COPY backend/ ./backend/
-
-# Copy helper package
 COPY helper/ ./helper/
-RUN pip install -e ./helper/
+RUN pip install --no-cache-dir -e ./helper/
 
-# Copy frontend build output
+# Copy pre-built frontend from Stage 1 (no Node needed in this image)
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Copy Docker entrypoint script
+# Copy entrypoint and optional examples
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
-
-# Copy examples (optional, for reference)
 COPY examples/ ./examples/
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV DATA_DIR=/data
-ENV DATABASE_URL=sqlite:////data/conduit.db
-ENV UVICORN_HOST=0.0.0.0
-ENV UVICORN_PORT=8000
+# Baked-in defaults — all can be overridden at runtime via environment variables
+ENV PYTHONUNBUFFERED=1 \
+    DATA_DIR=/data \
+    DATABASE_URL=sqlite:////data/conduit.db \
+    UVICORN_HOST=0.0.0.0 \
+    UVICORN_PORT=8000
 
-# Create data directory
-RUN mkdir -p /data
+# Create data dir, non-root user, and hand ownership in one layer
+RUN mkdir -p /data \
+    && useradd -m -u 1000 conduit \
+    && chown -R conduit:conduit /app /data
 
-# Expose ports
-EXPOSE 8000 5173
-
-# Non-root user for security
-RUN useradd -m -u 1000 conduit && chown -R conduit:conduit /app /data
 USER conduit
 
-# Health check
+EXPOSE 8000
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Entrypoint: run backend (frontend is pre-built and served as static files)
+# exec form so PID 1 receives SIGTERM directly (no shell wrapper)
 ENTRYPOINT ["./docker-entrypoint.sh"]
