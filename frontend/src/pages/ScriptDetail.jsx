@@ -141,7 +141,7 @@ function DownloadsPanel({ scriptId }) {
 
       {files.length === 0 ? (
         <div className="p-6 text-sm text-gray-600 text-center">
-          No files yet — write files to the <code className="bg-gray-800 px-1 rounded text-gray-500">downloads/</code> folder in your script to make them appear here
+          No files yet — write files to the <code className="bg-gray-800 px-1 rounded text-gray-500">downloads/</code> folder in your script and they will appear here
         </div>
       ) : (
         <div className="divide-y divide-gray-800">

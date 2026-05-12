@@ -124,8 +124,9 @@ def _build_tool_file_path(script_id: str, python_name: str) -> Path:
 
 
 def _scaffold_script_file(file_path: Path) -> None:
-    """Create the directory tree and write the starter script."""
+    """Create the directory tree, write the starter script, and ensure downloads/ exists."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    (file_path.parent / "downloads").mkdir(exist_ok=True)
     if not file_path.exists():
         file_path.write_text(_STARTER_TEMPLATE)
     logger.info("Scaffolded script file at %s", file_path)
@@ -687,8 +688,7 @@ def list_downloads(script_id: str, db: Session = Depends(get_db)) -> List[Dict[s
     """
     script = _get_script_or_404(script_id, db)
     downloads_dir = Path(script.file_path).parent / "downloads"
-    if not downloads_dir.exists():
-        return []
+    downloads_dir.mkdir(exist_ok=True)
 
     files = []
     for f in downloads_dir.rglob("*"):
