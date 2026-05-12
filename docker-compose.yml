@@ -11,7 +11,9 @@ services:
       POSTGRES_USER: conduit
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-conduit}
     volumes:
-      - ${DATA_DIR_HOST:-./conduit-data}/postgres:/var/lib/postgresql/data
+      # Named volume — Docker manages ownership so postgres can always write here.
+      # To back up: docker exec conduit-db pg_dump -U conduit conduit > backup.sql
+      - conduit-postgres:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U conduit -d conduit"]
@@ -28,10 +30,13 @@ services:
     container_name: conduit
     depends_on:
       db:
-        condition: service_healthy   # wait for postgres before starting
+        condition: service_healthy   # wait for postgres to be ready
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
+      # Bind mount for conduit app data (scripts, encryption key, logs).
+      # Set DATA_DIR_HOST to use a custom path, e.g.:
+      #   echo "DATA_DIR_HOST=/home/user/Docker/conduit" >> .env
       - ${DATA_DIR_HOST:-./conduit-data}:/data
     environment:
       DATA_DIR: /data
@@ -43,8 +48,8 @@ services:
       CRITICAL_THRESHOLD: ${CRITICAL_THRESHOLD:-0.90}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
-      # Frontend is served on the same origin (port 8000), so * is safe here.
-      # For internet-facing deployments set an explicit origin.
+      # Frontend and API share port 8000 in Docker so * is safe here.
+      # For internet-facing deployments set an explicit origin instead.
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
 
       # Auth — disabled by default. Enable for any shared/public deployment.
@@ -80,3 +85,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+# ── Volumes ────────────────────────────────────────────────────────────────
+volumes:
+  conduit-postgres:
+    # Docker-managed volume for PostgreSQL data. Stored at:
+    # /var/lib/docker/volumes/conduit_conduit-postgres/_data
