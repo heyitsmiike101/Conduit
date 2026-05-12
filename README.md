@@ -18,7 +18,55 @@ A self-hosted Python automation platform. Write scripts, run them on a schedule 
 
 ---
 
-## Requirements
+## Quick Start with Docker (Recommended)
+
+**Prerequisites:** Docker and Docker Compose installed ([get Docker](https://docs.docker.com/get-docker/))
+
+### 30-second setup
+
+```bash
+git clone https://github.com/heyitsmiike101/Conduit.git
+cd Conduit
+docker-compose up -d
+```
+
+Open **http://localhost:5173** in your browser. That's it!
+
+### Configure data directory
+
+By default, all data (database, scripts, logs) is stored in `./conduit-data/`. To use a custom directory:
+
+```bash
+# Before running docker-compose, set the data directory
+export DATA_DIR_HOST=/path/to/my/data
+docker-compose up -d
+```
+
+### Common Docker tasks
+
+```bash
+# View logs
+docker-compose logs -f conduit
+
+# Stop (data persists)
+docker-compose down
+
+# Restart
+docker-compose up -d
+
+# Update code and rebuild
+git pull origin main
+docker-compose build --no-cache
+docker-compose up -d
+```
+
+For advanced configuration, custom ports, resource limits, and production setup, see **[DOCKER.md](./DOCKER.md)**.
+
+---
+
+## Local Development (Without Docker)
+
+### Requirements
 
 - Python 3.9+
 - Node.js 18+

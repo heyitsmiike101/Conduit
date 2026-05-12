@@ -38,8 +38,9 @@ RUN pip install -e ./helper/
 # Copy frontend build output
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Copy startup script
-COPY start.py ./
+# Copy Docker entrypoint script
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
 # Copy examples (optional, for reference)
 COPY examples/ ./examples/
@@ -65,5 +66,5 @@ USER conduit
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Entrypoint: run start.py for backend, serve frontend via uvicorn static files
-ENTRYPOINT ["python", "start.py"]
+# Entrypoint: run backend (frontend is pre-built and served as static files)
+ENTRYPOINT ["./docker-entrypoint.sh"]

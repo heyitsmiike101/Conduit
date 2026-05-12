@@ -35,3 +35,6 @@ cron-descriptor>=1.4.0
 
 # --- Form parsing (required by FastAPI for multipart uploads) ---
 python-multipart>=0.0.9
+
+# --- Static file serving (required by FastAPI StaticFiles for Docker frontend) ---
+aiofiles>=23.0.0

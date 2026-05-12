@@ -7,8 +7,9 @@ services:
       dockerfile: Dockerfile
     container_name: conduit
     ports:
+      # Backend + frontend are both served on port 8000 in Docker
+      # (frontend is pre-built and served as static files by FastAPI)
       - "${BACKEND_PORT:-8000}:8000"
-      - "${FRONTEND_PORT:-5173}:5173"
     volumes:
       # Mount persistent data directory — configure via DATA_DIR_HOST environment variable
       # Default: ./conduit-data (creates in current directory)

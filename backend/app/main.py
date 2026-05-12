@@ -25,6 +25,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -169,20 +171,45 @@ def create_app() -> FastAPI:
     # Request size limiting — prevent disk/memory exhaustion
     app.middleware("http")(request_size_limiter)
 
-    # CORS — restrict to configured origins and necessary HTTP methods/headers
-    # allow_origins validated in config.py to prevent ["*"] + allow_credentials=True
+    # CORS — browsers block allow_credentials=True when allow_origins=["*"]
+    # so we disable credentials when wildcard is used (internal deployments)
+    wildcard = "*" in settings.cors_allowed_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,
-        allow_credentials=True,
+        allow_credentials=not wildcard,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
+        allow_headers=["*"] if wildcard else ["Content-Type", "Authorization"],
     )
 
     # Register all routers
     _register_routers(app)
 
+    # Serve pre-built frontend static files (Docker production mode)
+    # Falls back gracefully if frontend/dist doesn't exist (local dev mode)
+    _mount_frontend(app)
+
     return app
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Mount the pre-built Vite frontend as static files if available."""
+    # Try Docker path first, then local dev path
+    candidates = [
+        Path("/app/frontend/dist"),
+        Path(__file__).resolve().parents[3] / "frontend" / "dist",
+    ]
+    for dist in candidates:
+        if dist.exists() and (dist / "index.html").exists():
+            # Serve assets (js/css/images) from /assets
+            app.mount("/assets", StaticFiles(directory=str(dist / "assets")), name="assets")
+            # Catch-all: serve index.html for all non-API routes (SPA routing)
+            @app.get("/{full_path:path}", include_in_schema=False)
+            async def spa_fallback(full_path: str):
+                return FileResponse(str(dist / "index.html"))
+            logger.info("Frontend static files mounted from %s", dist)
+            return
+    logger.info("No frontend/dist found — running in API-only mode (use 'npm run dev' for UI)")
 
 
 def _rate_limit_exceeded_handler(request, exc):
