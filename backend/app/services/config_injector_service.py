@@ -22,6 +22,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.encryption import EncryptionError
 from app.db.models import Script, ScriptScope, Variable
 from app.services.encryption_service import decrypt_variable
 
@@ -81,12 +82,31 @@ def create_config(execution_id: str, script: Script, db: Session) -> Path:
         global_vars = [v for v in global_vars if v.id in selected_ids]
         account_vars = [v for v in account_vars if v.id in selected_ids]
 
-    # Build config dict — account vars override global vars of the same name
+    # Build config dict — account vars override global vars of the same name.
+    # Unreadable variables (wrong key) are skipped with a warning so one bad
+    # variable doesn't prevent all scripts from running.
     config: dict[str, str] = {}
+    bad_vars: list[str] = []
     for var in global_vars:
-        config[var.name] = decrypt_variable(var.value_encrypted)
+        try:
+            config[var.name] = decrypt_variable(var.value_encrypted)
+        except EncryptionError:
+            bad_vars.append(var.name)
+            logger.warning("Cannot decrypt variable '%s' (id=%s) — skipping", var.name, var.id)
     for var in account_vars:
-        config[var.name] = decrypt_variable(var.value_encrypted)
+        try:
+            config[var.name] = decrypt_variable(var.value_encrypted)
+        except EncryptionError:
+            bad_vars.append(var.name)
+            logger.warning("Cannot decrypt variable '%s' (id=%s) — skipping", var.name, var.id)
+
+    if bad_vars:
+        names = ", ".join(bad_vars)
+        raise EncryptionError(
+            f"The following variable(s) could not be decrypted and need to be re-saved: {names}. "
+            "This usually means the encryption key changed since the variable was created. "
+            "Edit each variable and save a new value to fix this."
+        )
 
     # Write to a uniquely-named temp file
     tmp_dir = settings.data_dir / "tmp"
