@@ -241,6 +241,7 @@ def _register_routers(app: FastAPI) -> None:
     from app.api.internal import router as internal_router
     from app.api.metrics import router as metrics_router
     from app.api.settings import router as settings_router
+    from app.api.packages import router as packages_router
 
     api_prefix = "/api/v1"
 
@@ -264,6 +265,7 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(metrics_router, prefix=api_prefix, **protected)
     app.include_router(settings_router, prefix=api_prefix, **protected)
     app.include_router(audit_router, prefix=api_prefix, **protected)
+    app.include_router(packages_router, prefix=api_prefix, **protected)
 
 
 # Create the application instance
